@@ -11,6 +11,7 @@ Supported workflows:
 import logging
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Iterable, Optional
@@ -18,9 +19,13 @@ from typing import Iterable, Optional
 import click
 import requests
 
+CLI_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CLI_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from pdf2text.grobid import GrobidServer, ensure_grobid_server
 from pdf2text.pdf2text import (
-    extract_figures,
     extract_fulltext,
     list_pdfs,
     save_markdown_from_json,
@@ -70,9 +75,21 @@ def cli() -> None:
     help="Do not attempt to auto-start a local GROBID server when no URL is provided.",
 )
 @click.option(
-    "--skip-figures",
+    "--figures/--no-figures",
+    default=True,
+    help="Extract figures into the bundle.",
+    show_default=True,
+)
+@click.option(
+    "--tables/--no-tables",
+    default=True,
+    help="Extract tables into the bundle.",
+    show_default=True,
+)
+@click.option(
+    "--copy-pdf",
     is_flag=True,
-    help="Skip figure/table extraction.",
+    help="Copy the source PDF into the output bundle.",
 )
 @click.option(
     "--overwrite",
@@ -90,7 +107,9 @@ def pdf_command(
     output_dir: Path,
     grobid_url: Optional[str],
     no_auto_start: bool,
-    skip_figures: bool,
+    figures: bool,
+    tables: bool,
+    copy_pdf: bool,
     overwrite: bool,
     no_markdown: bool,
 ) -> None:
@@ -130,12 +149,13 @@ def pdf_command(
                 auto_start_grobid=False,
                 overwrite=overwrite,
                 generate_markdown=not no_markdown,
+                copy_pdf=copy_pdf,
+                extract_figures=figures,
+                extract_tables=tables,
             )
 
             if json_result:
                 successful += 1
-                if not skip_figures:
-                    extract_figures(pdf, output_dir, overwrite=overwrite)
         except Exception as exc:
             logger.error("Error processing %s: %s", pdf, exc)
             failed.append((pdf, str(exc)))

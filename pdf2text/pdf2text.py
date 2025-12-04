@@ -2,17 +2,26 @@
 Lightweight PDF extraction helpers.
 
 This module focuses on converting PDFs into structured JSON using GROBID,
-optionally extracting figures, and rendering the extracted structure into
-Markdown files that sit next to the JSON output.
+optionally extracting figures/tables, and rendering the extracted structure
+into Markdown files that sit next to the JSON output. Paths stored in JSON
+and Markdown are normalized to be relative to the output bundle.
 """
 
 import json
 import logging
 import os
+import shutil
+import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+MODULE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = MODULE_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from pdf2text.grobid import GrobidServer, ensure_grobid_server
 
@@ -51,6 +60,15 @@ class ExtractionConfig(BaseModel):
     overwrite: bool = Field(default=False, description="Overwrite existing files")
     generate_markdown: bool = Field(
         default=True, description="Render extracted JSON into Markdown"
+    )
+    copy_pdf: bool = Field(
+        default=False, description="Copy the source PDF into the output bundle"
+    )
+    extract_figures: bool = Field(
+        default=False, description="Extract figures into a figures/ folder"
+    )
+    extract_tables: bool = Field(
+        default=False, description="Extract tables into a tables/ folder"
     )
 
     @field_validator("pdf_file")
@@ -205,6 +223,8 @@ def build_markdown_content(article: Dict[str, Any]) -> str:
             file_path = figure.get("file") or figure.get("file_path") or figure.get("path")
 
             lines.append(f"### {label}")
+            if file_path:
+                lines.append(f"![{label}]({Path(file_path).as_posix()})")
             if caption:
                 lines.append(caption)
             meta_parts = []
@@ -228,8 +248,11 @@ def build_markdown_content(article: Dict[str, Any]) -> str:
             caption = (table.get("caption") or "").strip()
             content = table.get("content") or table.get("text")
             page = table.get("page")
+            table_path = table.get("file") or table.get("file_path") or table.get("path")
 
             lines.append(f"### {label}")
+            if table_path:
+                lines.append(f"![{label}]({Path(table_path).as_posix()})")
             if caption:
                 lines.append(caption)
             if content:
@@ -266,6 +289,89 @@ def save_markdown_from_json(
     return md_path
 
 
+def _relativize_path(path: Union[str, Path], base: Path) -> Optional[str]:
+    """Return path relative to base if possible."""
+    if not path:
+        return None
+    path_obj = Path(path)
+    try:
+        return path_obj.resolve().relative_to(base.resolve()).as_posix()
+    except Exception:
+        if not path_obj.is_absolute():
+            return path_obj.as_posix()
+    return None
+
+
+def _merge_asset_data(
+    article: Dict[str, Any],
+    asset_data: Dict[str, Any],
+    output_path: Path,
+    include_figures: bool = True,
+    include_tables: bool = True,
+) -> None:
+    """Merge figure/table metadata into the article with relative paths."""
+    figures_meta = asset_data.get("figures") or []
+    tables_meta = asset_data.get("tables") or []
+
+    figure_files = asset_data.get("figure_files") or []
+    table_files = asset_data.get("table_files") or []
+
+    merged_figures: List[Dict[str, Any]] = []
+    if include_figures:
+        source_figures = article.get("figures") or figures_meta
+        for idx, figure in enumerate(source_figures):
+            entry = dict(figure)
+            path_candidate = (
+                entry.get("file")
+                or entry.get("file_path")
+                or entry.get("path")
+                or entry.get("url")
+            )
+            if not path_candidate and idx < len(figure_files):
+                path_candidate = figure_files[idx]
+
+            rel_path = _relativize_path(path_candidate, output_path) if path_candidate else None
+            if rel_path:
+                entry["file_path"] = rel_path
+            merged_figures.append(entry)
+
+        if not merged_figures and figure_files:
+            merged_figures = [
+                {"label": f"Figure {idx + 1}", "file_path": _relativize_path(path, output_path)}
+                for idx, path in enumerate(figure_files)
+            ]
+
+    merged_tables: List[Dict[str, Any]] = []
+    if include_tables:
+        source_tables = article.get("tables") or tables_meta
+        for idx, table in enumerate(source_tables):
+            entry = dict(table)
+            path_candidate = (
+                entry.get("file")
+                or entry.get("file_path")
+                or entry.get("path")
+                or entry.get("url")
+            )
+            if not path_candidate and idx < len(table_files):
+                path_candidate = table_files[idx]
+
+            rel_path = _relativize_path(path_candidate, output_path) if path_candidate else None
+            if rel_path:
+                entry["file_path"] = rel_path
+            merged_tables.append(entry)
+
+        if not merged_tables and table_files:
+            merged_tables = [
+                {"label": f"Table {idx + 1}", "file_path": _relativize_path(path, output_path)}
+                for idx, path in enumerate(table_files)
+            ]
+
+    if merged_figures:
+        article["figures"] = merged_figures
+    if merged_tables:
+        article["tables"] = merged_tables
+
+
 def extract_fulltext(
     pdf_file: Union[str, Path],
     output_dir: Union[str, Path],
@@ -273,6 +379,9 @@ def extract_fulltext(
     auto_start_grobid: bool = True,
     overwrite: bool = False,
     generate_markdown: bool = True,
+    copy_pdf: bool = False,
+    extract_figures: bool = False,
+    extract_tables: bool = False,
 ) -> Optional[Path]:
     """
     Extract structured text from a PDF and optionally render Markdown.
@@ -284,6 +393,9 @@ def extract_fulltext(
         auto_start_grobid=auto_start_grobid,
         overwrite=overwrite,
         generate_markdown=generate_markdown,
+        copy_pdf=copy_pdf,
+        extract_figures=extract_figures,
+        extract_tables=extract_tables,
     )
 
     if config.grobid_url is None and config.auto_start_grobid:
@@ -310,11 +422,35 @@ def extract_fulltext(
             warnings.filterwarnings("ignore", message=".*unclosed.*")
             import scipdf
 
-        logger.info("Processing PDF: %s with GROBID URL: %s", config.pdf_file, config.grobid_url)
+        logger.info(
+            "Processing PDF: %s with GROBID URL: %s", config.pdf_file, config.grobid_url
+        )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", ResourceWarning)
             warnings.filterwarnings("ignore", message=".*Implicitly cleaning up.*")
-            article_dict = scipdf.parse_pdf_to_dict(str(config.pdf_file), grobid_url=config.grobid_url)
+            article_dict = scipdf.parse_pdf_to_dict(
+                str(config.pdf_file), grobid_url=config.grobid_url
+            )
+
+        asset_data: Dict[str, Any] = {}
+        if config.extract_figures or config.extract_tables or config.copy_pdf:
+            asset_data = extract_assets(
+                config.pdf_file,
+                output_path,
+                basename,
+                overwrite=config.overwrite,
+                copy_pdf=config.copy_pdf,
+                run_extraction=(config.extract_figures or config.extract_tables),
+            )
+            _merge_asset_data(
+                article_dict,
+                asset_data,
+                output_path,
+                include_figures=config.extract_figures,
+                include_tables=config.extract_tables,
+            )
+            if config.copy_pdf:
+                article_dict["pdf_file"] = f"{basename}.pdf"
 
         with open(json_output, "w", encoding="utf-8") as handle:
             json.dump(article_dict, handle, indent=4, ensure_ascii=False)
@@ -334,53 +470,103 @@ def extract_fulltext(
         return None
 
 
+def extract_assets(
+    pdf_file: Union[str, Path],
+    output_path: Path,
+    basename: str,
+    overwrite: bool = False,
+    copy_pdf: bool = False,
+    run_extraction: bool = True,
+) -> Dict[str, Any]:
+    """
+    Extract figures and tables using scipdf.parse_figures.
+
+    Returns metadata about the extracted assets (figure/table lists and file paths).
+    """
+    import warnings
+
+    pdf_path = Path(pdf_file).resolve()
+    asset_info: Dict[str, Any] = {}
+
+    data_dir = output_path / "data"
+    figures_dir = output_path / "figures"
+    tables_dir = output_path / "tables"
+    datafile = data_dir / f"{basename}.json"
+
+    if run_extraction:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ResourceWarning)
+            warnings.filterwarnings("ignore", message=".*Implicitly cleaning up.*")
+            warnings.filterwarnings("ignore", message=".*unclosed.*")
+            import scipdf
+
+        if datafile.exists() and not overwrite:
+            logger.info("Figures/tables already extracted, skipping: %s", datafile)
+        else:
+            data_dir.mkdir(parents=True, exist_ok=True)
+            figures_dir.mkdir(parents=True, exist_ok=True)
+            tables_dir.mkdir(parents=True, exist_ok=True)
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                temp_pdf_dir = Path(tmpdir)
+                temp_pdf = temp_pdf_dir / f"{basename}.pdf"
+                shutil.copy2(pdf_path, temp_pdf)
+
+                logger.info("Extracting figures/tables from %s to %s", pdf_path, output_path)
+                scipdf.parse_figures(str(temp_pdf_dir), output_folder=str(output_path))
+
+    if copy_pdf:
+        copied_pdf = output_path / f"{basename}.pdf"
+        if not copied_pdf.exists() or overwrite:
+            shutil.copy2(pdf_path, copied_pdf)
+        asset_info["pdf_file"] = copied_pdf
+
+    if datafile.exists():
+        try:
+            with open(datafile, "r", encoding="utf-8") as handle:
+                meta = json.load(handle)
+                asset_info.update(meta if isinstance(meta, dict) else {})
+        except Exception as exc:
+            logger.warning("Failed to load figure/table metadata from %s: %s", datafile, exc)
+
+    figure_files = []
+    if figures_dir.exists():
+        for ext in ("*.png", "*.jpg", "*.jpeg", "*.svg"):
+            figure_files.extend(sorted(figures_dir.rglob(ext)))
+    table_files = []
+    if tables_dir.exists():
+        for ext in ("*.png", "*.jpg", "*.jpeg", "*.svg"):
+            table_files.extend(sorted(tables_dir.rglob(ext)))
+
+    asset_info["figure_files"] = figure_files
+    asset_info["table_files"] = table_files
+
+    return asset_info
+
+
 def extract_figures(
     pdf_file: Union[str, Path],
     output_dir: Union[str, Path],
     overwrite: bool = False,
 ) -> Optional[Path]:
     """
-    Extract figures and tables from a PDF using scipdf.
+    Public helper to extract figures/tables into the expected bundle layout.
     """
-    import warnings
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", ResourceWarning)
-        warnings.filterwarnings("ignore", message=".*Implicitly cleaning up.*")
-        warnings.filterwarnings("ignore", message=".*unclosed.*")
-        import scipdf
-
     pdf_path = Path(pdf_file).resolve()
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
     output_path, basename = gen_dest_path(pdf_path, output_dir)
-    data_dir = output_path / "data"
-    pdf_dir = output_path / "pdf"
-    datafile = data_dir / f"{basename}.json"
-    new_pdf_file = pdf_dir / f"{basename}.pdf"
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    if datafile.exists() and not overwrite:
-        logger.info("Figures already extracted, skipping: %s", datafile)
-        return None
-
-    pdf_dir.mkdir(parents=True, exist_ok=True)
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    if not new_pdf_file.exists():
-        import shutil
-
-        shutil.copy2(pdf_path, new_pdf_file)
-        logger.info("Copied PDF to: %s", new_pdf_file)
-
-    try:
-        logger.info("Extracting figures from %s to %s", pdf_path, output_path)
-        scipdf.parse_figures(str(pdf_dir), output_folder=str(output_path))
-        logger.info("Successfully extracted figures to: %s", output_path)
-        return output_path
-    except Exception as exc:
-        logger.error("Error extracting figures from %s: %s", pdf_path, exc)
-        return None
+    asset_data = extract_assets(
+        pdf_path,
+        output_path,
+        basename,
+        overwrite=overwrite,
+        copy_pdf=False,
+    )
+    return output_path
 
 
 __all__ = [
@@ -392,4 +578,3 @@ __all__ = [
     "list_pdfs",
     "save_markdown_from_json",
 ]
-

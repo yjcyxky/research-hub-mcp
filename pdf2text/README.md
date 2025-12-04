@@ -5,7 +5,8 @@ Lightweight utilities for turning PDFs into structured JSON, Markdown, and extra
 ## Features
 - PDF → structured JSON via GROBID (auto-start support)
 - Optional Markdown rendering that mirrors the JSON contents
-- Figure/table extraction through scipdf
+- Optional copying of the source PDF into the bundle
+- Figure/table extraction through scipdf with relative paths recorded in JSON/MD
 - CLI helpers plus a small Python API
 
 ## Installation
@@ -22,11 +23,14 @@ pip install scipdf  # required for PDF parsing
 ## Quick Start
 
 ```bash
-# Convert a directory of PDFs to JSON + Markdown
+# Convert a directory of PDFs to JSON + Markdown (+figures/tables)
 python -m pdf2text.cli pdf --pdf-dir ./pdfs --output-dir ./output
 
-# Skip Markdown or figure extraction when needed
-python -m pdf2text.cli pdf --pdf-dir ./pdfs --output-dir ./output --no-markdown --skip-figures
+# Skip Markdown or assets when needed
+python -m pdf2text.cli pdf --pdf-dir ./pdfs --output-dir ./output --no-markdown --no-figures --no-tables
+
+# Copy the original PDF into the bundle
+python -m pdf2text.cli pdf --pdf-dir ./pdfs --output-dir ./output --copy-pdf
 
 # Render Markdown from existing JSON outputs
 python -m pdf2text.cli markdown ./output
@@ -43,8 +47,8 @@ python -m pdf2text.cli pdf --pdf-dir ./pdfs --output-dir ./output --grobid-url h
 ```python
 from pdf2text import extract_fulltext, extract_figures, save_markdown_from_json
 
-# Extract JSON + Markdown for a single PDF
-extract_fulltext("paper.pdf", "./output")
+# Extract JSON + Markdown for a single PDF (with figures/tables + PDF copy)
+extract_fulltext("paper.pdf", "./output", extract_figures=True, extract_tables=True, copy_pdf=True)
 
 # Extract figures/tables into the same output bundle
 extract_figures("paper.pdf", "./output")
@@ -69,8 +73,9 @@ python -m pdf2text.cli grobid stop
 ```
 output/
 ├── paper/
-│   ├── paper.json   # structured text and metadata
-│   ├── paper.md     # Markdown rendering of the JSON
-│   ├── data/        # scipdf figure/table metadata
-│   └── pdf/         # cached PDF copy for figure extraction
+│   ├── paper.json    # structured text and metadata (paths are relative)
+│   ├── paper.md      # Markdown rendering of the JSON (optional)
+│   ├── paper.pdf     # optional copy of the source PDF
+│   ├── figures/      # extracted figure images (optional)
+│   └── tables/       # extracted table images (optional)
 ```
