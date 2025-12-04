@@ -75,15 +75,15 @@ def cli() -> None:
     help="Do not attempt to auto-start a local GROBID server when no URL is provided.",
 )
 @click.option(
-    "--figures/--no-figures",
-    default=True,
-    help="Extract figures into the bundle.",
+    "--no-figures",
+    is_flag=True,
+    help="Do not extract figures into the bundle.",
     show_default=True,
 )
 @click.option(
-    "--tables/--no-tables",
-    default=True,
-    help="Extract tables into the bundle.",
+    "--no-tables",
+    is_flag=True,
+    help="Do not extract tables into the bundle.",
     show_default=True,
 )
 @click.option(
@@ -107,8 +107,8 @@ def pdf_command(
     output_dir: Path,
     grobid_url: Optional[str],
     no_auto_start: bool,
-    figures: bool,
-    tables: bool,
+    no_figures: bool,
+    no_tables: bool,
     copy_pdf: bool,
     overwrite: bool,
     no_markdown: bool,
@@ -150,8 +150,8 @@ def pdf_command(
                 overwrite=overwrite,
                 generate_markdown=not no_markdown,
                 copy_pdf=copy_pdf,
-                extract_figures=figures,
-                extract_tables=tables,
+                extract_figures=not no_figures,
+                extract_tables=not no_tables,
             )
 
             if json_result:

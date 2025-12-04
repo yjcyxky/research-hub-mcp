@@ -21,12 +21,19 @@ CLI Usage:
 import asyncio
 import base64
 import re
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote
 
 from playwright.async_api import Browser, async_playwright
+
+# Allow running as a script without installing the package
+PLUGIN_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = PLUGIN_ROOT.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from plugins.common import BasePlugin, DownloadResult
 
@@ -223,32 +230,35 @@ class WileyPDFDownloader(BasePlugin):
             )
             page = await context.new_page()
 
-            download_path = None
-
             try:
-                # Set up download handler
-                async def handle_download(download):
-                    nonlocal download_path
-                    # Save to temp directory first
-                    temp_file = Path(temp_dir) / download.suggested_filename
-                    await download.save_as(temp_file)
-                    download_path = temp_file
-
-                page.on("download", handle_download)
-
-                # Navigate - this may trigger download in headless mode
+                download = None
                 try:
-                    await page.goto(url, timeout=self.timeout, wait_until="commit")
-                except Exception as e:
-                    # "Download is starting" error is expected in headless mode
-                    if "Download is starting" not in str(e):
-                        raise
+                    async with page.expect_download(timeout=self.timeout) as download_info:
+                        try:
+                            await page.goto(url, timeout=self.timeout, wait_until="commit")
+                        except Exception as e:
+                            # "Download is starting" is expected when navigation triggers a download
+                            if "Download is starting" not in str(e):
+                                raise
+                    download = await download_info.value
+                except Exception:
+                    download = None
 
-                # Wait for download to complete
-                await asyncio.sleep(wait_time)
+                if not download:
+                    await asyncio.sleep(wait_time)
+                    return None
 
-                if download_path and download_path.exists():
-                    return download_path.read_bytes()
+                suggested_name = download.suggested_filename or "download.pdf"
+                temp_file = Path(temp_dir) / suggested_name
+                try:
+                    await download.save_as(temp_file)
+                except Exception:
+                    # If save_as fails (e.g., canceled), bail out
+                    await context.close()
+                    return None
+
+                if temp_file.exists():
+                    return temp_file.read_bytes()
 
             finally:
                 await context.close()
