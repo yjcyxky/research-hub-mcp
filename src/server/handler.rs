@@ -3,6 +3,7 @@ use crate::tools::{
     code_search::CodeSearchInput,
     download::{
         BatchDownloadInput as ActualBatchDownloadInput, DownloadInput as ActualDownloadInput,
+        DownloadOutputFormat,
     },
     metadata::MetadataInput as ActualMetadataInput,
     search::{SearchInput as ActualSearchInput, SearchResult},
@@ -43,6 +44,12 @@ pub struct SearchInput {
     /// Offset for pagination (default: 0)
     #[serde(default)]
     pub offset: u32,
+    /// Optional list of primary search sources to use (provider ids)
+    #[serde(default)]
+    pub sources: Option<Vec<String>>,
+    /// Optional list of metadata-only sources
+    #[serde(default)]
+    pub metadata_sources: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -176,7 +183,7 @@ impl ResearchServerHandler {
 impl ServerHandler for ResearchServerHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
-            instructions: Some(format!("🔬 Research Hub MCP Server v{} - Enhanced academic paper search and retrieval.\n\nProvides tools to:\n• 🔍 Search across 12+ academic sources (arXiv, CrossRef, PubMed, etc.)\n• 📥 Download papers with intelligent fallback protection\n• 📊 Extract metadata from PDFs\n• 🔍 Search code patterns in downloaded papers (NEW)\n• 📚 Generate citations in multiple formats (NEW)\n\nDesigned for personal academic research and Claude Code workflows.", env!("CARGO_PKG_VERSION"))),
+            instructions: Some(format!("🔬 Research Hub MCP Server v{} - Enhanced academic paper search and retrieval.\n\nProvides tools to:\n• 🔍 Search across 12+ academic sources (arXiv, CrossRef, PubMed, etc.)\n• 📥 Download papers with intelligent fallback protection\n• 📝 Convert PDFs to Markdown via pdf2text on request\n• 📊 Extract metadata from PDFs\n• 🔍 Search code patterns in downloaded papers (NEW)\n• 📚 Generate citations in multiple formats (NEW)\n\nDesigned for personal academic research and Claude Code workflows.", env!("CARGO_PKG_VERSION"))),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()
         }
@@ -259,7 +266,7 @@ impl ServerHandler for ResearchServerHandler {
                 },
                 Tool {
                     name: "download_paper".into(), 
-                    description: Some("Download a paper PDF by DOI. Papers are saved to the configured download directory.".into()),
+                    description: Some("Download a paper PDF by DOI with plugin fallback. Optionally render Markdown via pdf2text.".into()),
                     input_schema: Arc::new(serde_json::json!({
                         "type": "object",
                         "properties": {
@@ -270,6 +277,12 @@ impl ServerHandler for ResearchServerHandler {
                             "filename": {
                                 "type": "string", 
                                 "description": "Optional custom filename for the downloaded PDF"
+                            },
+                            "format": {
+                                "type": "string",
+                                "description": "Output format: 'pdf' (default) or 'markdown' (runs pdf2text after download)",
+                                "enum": ["pdf", "markdown"],
+                                "default": "pdf"
                             }
                         },
                         "required": ["doi"]
@@ -350,6 +363,24 @@ impl ServerHandler for ResearchServerHandler {
                 "search_papers" => {
                     // Simple parsing for simplified schema
                     let args = request.arguments.unwrap_or_default();
+                    let parse_vec = |key: &str| -> Option<Vec<String>> {
+                        args.get(key).and_then(|v| {
+                            if let Some(arr) = v.as_array() {
+                                Some(
+                                    arr.iter()
+                                        .filter_map(|val| val.as_str().map(str::to_string))
+                                        .collect(),
+                                )
+                            } else {
+                                v.as_str().map(|s| {
+                                    s.split(',')
+                                        .map(|part| part.trim().to_string())
+                                        .filter(|s| !s.is_empty())
+                                        .collect()
+                                })
+                            }
+                        })
+                    };
                     let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
                         ErrorData::invalid_params(
                             "Missing required 'query' parameter".to_string(),
@@ -366,6 +397,8 @@ impl ServerHandler for ResearchServerHandler {
                         search_type: crate::tools::search::SearchType::Auto,
                         limit,
                         offset: 0,
+                        sources: parse_vec("sources"),
+                        metadata_sources: parse_vec("metadata_sources"),
                     };
 
                     let results = search_tool.search_papers(input).await.map_err(|e| {
@@ -417,6 +450,14 @@ impl ServerHandler for ResearchServerHandler {
                         .get("filename")
                         .and_then(|v| v.as_str())
                         .map(ToString::to_string);
+                    let output_format = args
+                        .get("format")
+                        .and_then(|v| v.as_str())
+                        .map(|v| match v.to_lowercase().as_str() {
+                            "markdown" => DownloadOutputFormat::Markdown,
+                            _ => DownloadOutputFormat::Pdf,
+                        })
+                        .unwrap_or(DownloadOutputFormat::Pdf);
 
                     // Look up category from recent search results
                     let category = self.get_cached_category(doi).await;
@@ -429,6 +470,7 @@ impl ServerHandler for ResearchServerHandler {
                         category,
                         overwrite: false,
                         verify_integrity: true,
+                        output_format,
                     };
 
                     debug!("Attempting download with input: {:?}", input);
@@ -474,10 +516,38 @@ impl ServerHandler for ResearchServerHandler {
                                     .map(|h| format!("\n🔐 SHA256: {}...", &h[..16]))
                                     .unwrap_or_default();
 
+                                let mut success_message = format!(
+                                    "✅ Download successful!\n\n📄 File: {}\n📦 Size: {} KB{}{}",
+                                    result
+                                        .file_path
+                                        .as_ref()
+                                        .map_or("Unknown".to_string(), |p| p.display().to_string()),
+                                    file_size / 1024,
+                                    duration_info,
+                                    hash_info
+                                );
+
+                                if let Some(plugin) = result.used_plugin.as_deref() {
+                                    success_message
+                                        .push_str(&format!("\n🔌 Plugin fallback: {plugin}"));
+                                }
+
+                                if let Some(markdown_path) = &result.markdown_path {
+                                    success_message.push_str(&format!(
+                                        "\n📝 Markdown: {}",
+                                        markdown_path.display()
+                                    ));
+                                }
+
+                                if let Some(warning) = &result.post_process_error {
+                                    success_message.push_str(&format!(
+                                        "\n⚠️ Post-processing warning: {}",
+                                        warning
+                                    ));
+                                }
+
                                 Ok(CallToolResult {
-                                    content: Some(vec![Content::text(format!("✅ Download successful!\n\n📄 File: {}\n📦 Size: {} KB{}{}",
-                                        result.file_path.as_ref().map_or("Unknown".to_string(), |p| p.display().to_string()),
-                                        file_size / 1024, duration_info, hash_info))]),
+                                    content: Some(vec![Content::text(success_message)]),
                                     structured_content: None,
                                     is_error: Some(false),
                                 })
@@ -889,6 +959,8 @@ mod tests {
             query: "test".to_string(),
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
         assert_eq!(input.query, "test");
         assert_eq!(input.limit, 10);

@@ -5,7 +5,7 @@ use rust_research_mcp::{
     },
     tools::{
         categorize::CategorizeInput,
-        download::DownloadInput,
+        download::{DownloadInput, DownloadOutputFormat},
         metadata::MetadataInput,
         search::{SearchInput, SearchType as ToolSearchType},
         BibliographyTool, CategorizeTool, DownloadTool, MetadataExtractor, SearchTool,
@@ -151,6 +151,7 @@ async fn test_complete_research_workflow() {
                 category: Some("machine_learning".to_string()),
                 overwrite: true,
                 verify_integrity: true,
+                output_format: DownloadOutputFormat::Pdf,
             };
 
             let download_start = Instant::now();
@@ -559,6 +560,7 @@ async fn test_resource_cleanup_and_limits() {
         category: None,
         overwrite: true,
         verify_integrity: false,
+        output_format: DownloadOutputFormat::Pdf,
     };
 
     // This should respect file size limits configured in the system
@@ -767,6 +769,7 @@ async fn test_security_input_validation() {
             category: None,
             overwrite: false,
             verify_integrity: false,
+            output_format: DownloadOutputFormat::Pdf,
         };
 
         let result = download_tool.download_paper(download_input).await;

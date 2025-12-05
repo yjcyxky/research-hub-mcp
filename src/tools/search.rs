@@ -28,6 +28,12 @@ pub struct SearchInput {
     /// Offset for pagination (default: 0)
     #[serde(default)]
     pub offset: u32,
+    /// Optional list of primary search sources to use (provider ids)
+    #[serde(default)]
+    pub sources: Option<Vec<String>>,
+    /// Optional list of metadata-only sources for validation/enrichment
+    #[serde(default)]
+    pub metadata_sources: Option<Vec<String>>,
 }
 
 /// Type of search to perform
@@ -74,6 +80,9 @@ pub struct SearchResult {
     pub successful_providers: Vec<String>,
     /// List of providers that failed during the search
     pub failed_providers: Vec<String>,
+    /// List of metadata-only providers used for validation
+    #[serde(default)]
+    pub metadata_providers: Vec<String>,
     /// Details about provider errors that occurred
     pub provider_errors: HashMap<String, String>,
     /// Number of papers found per provider
@@ -192,6 +201,8 @@ impl SearchTool {
             max_results: input.limit,
             offset: input.offset,
             params: HashMap::new(),
+            sources: input.sources.clone(),
+            metadata_sources: input.metadata_sources.clone(),
         };
 
         // Execute meta-search
@@ -273,6 +284,24 @@ impl SearchTool {
             });
         }
 
+        if let Some(sources) = &input.sources {
+            if sources.iter().any(|s| s.trim().is_empty()) {
+                return Err(crate::Error::InvalidInput {
+                    field: "sources".to_string(),
+                    reason: "Source identifiers cannot be empty".to_string(),
+                });
+            }
+        }
+
+        if let Some(metadata_sources) = &input.metadata_sources {
+            if metadata_sources.iter().any(|s| s.trim().is_empty()) {
+                return Err(crate::Error::InvalidInput {
+                    field: "metadata_sources".to_string(),
+                    reason: "Metadata source identifiers cannot be empty".to_string(),
+                });
+            }
+        }
+
         // Enhanced security validation - reject potentially malicious input
         let query_lower = input.query.to_lowercase();
         let suspicious_patterns = [
@@ -335,11 +364,27 @@ impl SearchTool {
     /// Generate cache key for search input
     fn generate_cache_key(input: &SearchInput) -> String {
         format!(
-            "{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}",
             input.query.to_lowercase(),
             serde_json::to_string(&input.search_type).unwrap_or_default(),
             input.limit,
-            input.offset
+            input.offset,
+            Self::normalize_sources_for_cache(&input.sources),
+            Self::normalize_sources_for_cache(&input.metadata_sources)
+        )
+    }
+
+    fn normalize_sources_for_cache(sources: &Option<Vec<String>>) -> String {
+        sources.as_ref().map_or_else(
+            || "default".to_string(),
+            |list| {
+                let mut normalized: Vec<String> = list
+                    .iter()
+                    .map(|s| s.trim().to_lowercase().replace([' ', '-'], "_"))
+                    .collect();
+                normalized.sort();
+                normalized.join("|")
+            },
         )
     }
 
@@ -434,32 +479,38 @@ impl SearchTool {
 
         let returned_count = u32::try_from(papers.len()).unwrap_or(u32::MAX);
 
-        // Create source summary
-        let source_summary = if meta_result.by_source.len() > 1 {
-            format!(
-                "Multiple sources: {}",
-                meta_result
-                    .by_source
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
+        // Create source summary (exclude metadata-only providers)
+        let search_sources: Vec<String> = meta_result
+            .by_source
+            .keys()
+            .filter(|s| !meta_result.metadata_only_sources.contains(*s))
+            .cloned()
+            .collect();
+
+        let source_summary = if search_sources.len() > 1 {
+            format!("Multiple sources: {}", search_sources.join(", "))
         } else {
-            meta_result
-                .by_source
-                .keys()
-                .next()
+            search_sources
+                .get(0)
                 .cloned()
                 .unwrap_or_else(|| "No sources".to_string())
         };
 
         // Extract provider information
-        let successful_providers: Vec<String> = meta_result.by_source.keys().cloned().collect();
+        let metadata_providers: Vec<String> =
+            meta_result.metadata_only_sources.iter().cloned().collect();
+
+        let successful_providers: Vec<String> = meta_result
+            .by_source
+            .keys()
+            .filter(|provider| !meta_result.metadata_only_sources.contains(*provider))
+            .cloned()
+            .collect();
         let failed_providers: Vec<String> = meta_result.provider_errors.keys().cloned().collect();
         let papers_per_provider: HashMap<String, u32> = meta_result
             .by_source
             .iter()
+            .filter(|(provider, _)| !meta_result.metadata_only_sources.contains(*provider))
             .map(|(provider, papers)| (provider.clone(), u32::try_from(papers.len()).unwrap_or(0)))
             .collect();
 
@@ -477,6 +528,7 @@ impl SearchTool {
             category: None, // Will be set later by categorization
             successful_providers,
             failed_providers,
+            metadata_providers,
             provider_errors: meta_result.provider_errors,
             papers_per_provider,
         }
@@ -714,6 +766,7 @@ mod tests {
     use crate::client::providers::SearchType as ProviderSearchType;
     use crate::client::{MetaSearchResult, PaperMetadata};
     use crate::config::{Config, ResearchSourceConfig};
+    use std::collections::{HashMap, HashSet};
 
     fn create_test_config() -> Arc<Config> {
         let mut config = Config::default();
@@ -740,6 +793,8 @@ mod tests {
             search_type: SearchType::Auto,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
         assert!(SearchTool::validate_input(&empty_input).is_err());
 
@@ -749,6 +804,8 @@ mod tests {
             search_type: SearchType::Auto,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
         assert!(SearchTool::validate_input(&long_input).is_err());
 
@@ -758,6 +815,8 @@ mod tests {
             search_type: SearchType::Auto,
             limit: 0,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
         assert!(SearchTool::validate_input(&invalid_limit).is_err());
 
@@ -767,6 +826,8 @@ mod tests {
             search_type: SearchType::Auto,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
         assert!(SearchTool::validate_input(&valid_input).is_ok());
     }
@@ -803,6 +864,8 @@ mod tests {
             search_type: SearchType::Title,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
 
         let key1 = SearchTool::generate_cache_key(&input);
@@ -835,6 +898,7 @@ mod tests {
         let meta_result = MetaSearchResult {
             papers: vec![metadata],
             by_source,
+            metadata_only_sources: HashSet::new(),
             total_search_time: Duration::from_millis(100),
             successful_providers: 1,
             failed_providers: 0,
@@ -847,6 +911,8 @@ mod tests {
             search_type: SearchType::Title,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
 
         let result = SearchTool::convert_meta_result_to_search_result(
@@ -872,6 +938,8 @@ mod tests {
             search_type: SearchType::Title,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
 
         let result = SearchResult {
@@ -887,6 +955,7 @@ mod tests {
             category: None,
             successful_providers: vec![],
             failed_providers: vec![],
+            metadata_providers: vec![],
             provider_errors: HashMap::new(),
             papers_per_provider: HashMap::new(),
         };

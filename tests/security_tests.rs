@@ -1,4 +1,4 @@
-use rust_research_mcp::tools::download::{DownloadInput, DownloadTool};
+use rust_research_mcp::tools::download::{DownloadInput, DownloadOutputFormat, DownloadTool};
 use rust_research_mcp::tools::search::{SearchInput, SearchTool, SearchType};
 use rust_research_mcp::{Config, Error, MetaSearchClient, MetaSearchConfig};
 use std::sync::Arc;
@@ -113,6 +113,7 @@ async fn test_path_traversal_attempts() {
             category: None,
             overwrite: false,
             verify_integrity: false,
+            output_format: DownloadOutputFormat::Pdf,
         };
         let result = download_tool.download_paper(download_input).await;
         // Should fail validation due to invalid filename
@@ -216,6 +217,7 @@ async fn test_null_byte_injection() {
             category: None,
             overwrite: false,
             verify_integrity: false,
+            output_format: DownloadOutputFormat::Pdf,
         };
         let download_result = download_tool.download_paper(download_input).await;
         assert!(
@@ -276,6 +278,7 @@ async fn test_command_injection_attempts() {
             category: None,
             overwrite: false,
             verify_integrity: false,
+            output_format: DownloadOutputFormat::Pdf,
         };
         let download_result = download_tool.download_paper(download_input).await;
         assert!(
@@ -346,6 +349,7 @@ async fn test_unicode_handling() {
             category: None,
             overwrite: false,
             verify_integrity: false,
+            output_format: DownloadOutputFormat::Pdf,
         };
         let download_result = download_tool.download_paper(download_input).await;
         // Should either succeed with sanitized filename or fail validation
@@ -396,6 +400,7 @@ async fn test_memory_exhaustion_protection() {
         category: None,
         overwrite: false,
         verify_integrity: false,
+        output_format: DownloadOutputFormat::Pdf,
     };
     let result = download_tool.download_paper(download_input).await;
     // Should either fail early with size check or handle gracefully

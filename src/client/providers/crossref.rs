@@ -382,6 +382,8 @@ impl SourceProvider for CrossRefProvider {
             max_results: 1,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let result = self.search(&query, context).await?;
@@ -398,6 +400,8 @@ impl SourceProvider for CrossRefProvider {
             max_results: 1,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         match self.search(&query, context).await {

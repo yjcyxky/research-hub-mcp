@@ -9,7 +9,7 @@ use rust_research_mcp::{
     },
     server::ResearchServerHandler,
     tools::{
-        download::DownloadInput as ActualDownloadInput,
+        download::{DownloadInput as ActualDownloadInput, DownloadOutputFormat},
         metadata::MetadataInput as ActualMetadataInput,
         search::{SearchInput as ActualSearchInput, SearchType as ToolSearchType},
     },
@@ -363,6 +363,7 @@ async fn test_download_tool() {
         category: None,
         overwrite: false,
         verify_integrity: false,
+        output_format: DownloadOutputFormat::Pdf,
     };
 
     let result = download_tool.download_paper(invalid_input).await;
@@ -377,6 +378,7 @@ async fn test_download_tool() {
         category: None,
         overwrite: false,
         verify_integrity: false,
+        output_format: DownloadOutputFormat::Pdf,
     };
 
     let result = download_tool.download_paper(both_input).await;
@@ -631,6 +633,7 @@ mod integration_tests {
                     category: None,
                     overwrite: true,
                     verify_integrity: false,
+                    output_format: DownloadOutputFormat::Pdf,
                 };
 
                 let download_result = download_tool.download_paper(download_input).await;

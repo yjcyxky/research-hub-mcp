@@ -69,6 +69,24 @@ pub struct SearchQuery {
     pub offset: u32,
     /// Additional provider-specific parameters
     pub params: HashMap<String, String>,
+    /// Explicit list of search-capable sources to use (provider ids). `None` => defaults.
+    pub sources: Option<Vec<String>>,
+    /// Metadata-only sources to validate/enrich results. `None` => defaults.
+    pub metadata_sources: Option<Vec<String>>,
+}
+
+impl Default for SearchQuery {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            search_type: SearchType::Auto,
+            max_results: 10,
+            offset: 0,
+            params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
+        }
+    }
 }
 
 /// Specifies the type of search to perform across academic sources.
@@ -369,6 +387,8 @@ pub trait SourceProvider: Send + Sync {
             max_results: 1,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let result = self.search(&query, context).await?;
@@ -384,6 +404,8 @@ pub trait SourceProvider: Send + Sync {
             max_results: 1,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         match self.search(&query, context).await {

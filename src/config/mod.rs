@@ -231,6 +231,8 @@ impl Default for RateLimitingConfig {
         providers.insert("pubmed".to_string(), 2.0);
         providers.insert("pubmed_central".to_string(), 2.0);
         providers.insert("biorxiv".to_string(), 2.0);
+        providers.insert("medrxiv".to_string(), 2.0);
+        providers.insert("google_scholar".to_string(), 1.0);
 
         // Commercial/API sources - moderate rates
         providers.insert("crossref".to_string(), 1.5);

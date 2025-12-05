@@ -481,6 +481,8 @@ mod tests {
             max_results: 50,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let url = provider.build_search_url(&query).unwrap();
@@ -499,6 +501,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let url = provider.build_search_url(&query).unwrap();
@@ -515,6 +519,8 @@ mod tests {
             max_results: 20,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let url = provider.build_search_url(&query).unwrap();
@@ -533,6 +539,8 @@ mod tests {
             max_results: 30,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let url = provider.build_search_url(&query).unwrap();
@@ -550,6 +558,8 @@ mod tests {
             max_results: 15,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let url = provider.build_search_url(&query).unwrap();
@@ -567,6 +577,8 @@ mod tests {
             max_results: 25,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let url = provider.build_search_url(&query).unwrap();
@@ -584,6 +596,8 @@ mod tests {
             max_results: 100,
             offset: 200,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let url = provider.build_search_url(&query).unwrap();
@@ -601,6 +615,8 @@ mod tests {
             max_results: 500, // Above OpenAlex's max of 200
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let url = provider.build_search_url(&query).unwrap();
@@ -885,6 +901,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let result = provider.build_search_url(&query);
@@ -907,6 +925,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let result = provider.build_search_url(&query);
@@ -923,6 +943,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let result = provider.build_search_url(&query);
@@ -953,6 +975,8 @@ mod tests {
                 max_results: 10,
                 offset: 0,
                 params: HashMap::new(),
+                sources: None,
+                metadata_sources: None,
             };
 
             let result = provider.build_search_url(&query);

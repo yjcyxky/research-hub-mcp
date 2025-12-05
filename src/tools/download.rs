@@ -11,10 +11,12 @@ use sha2::{Digest, Sha256};
 // use std::any::Any;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
 use tokio::sync::{mpsc, RwLock};
 // use tokio_util::io::ReaderStream; // Not needed currently
 use tracing::{debug, error, info, instrument, warn};
@@ -43,6 +45,25 @@ pub struct DownloadInput {
     /// Whether to verify file integrity after download
     #[serde(default = "default_verify")]
     pub verify_integrity: bool,
+    /// Desired output format. `pdf` keeps existing behavior, `markdown` will run pdf2text after download.
+    #[serde(default)]
+    pub output_format: DownloadOutputFormat,
+}
+
+/// Output format for downloaded content
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadOutputFormat {
+    /// Download only the PDF (default behavior)
+    Pdf,
+    /// Download PDF and render Markdown with pdf2text
+    Markdown,
+}
+
+impl Default for DownloadOutputFormat {
+    fn default() -> Self {
+        Self::Pdf
+    }
 }
 
 /// Progress information for a download
@@ -97,6 +118,8 @@ pub struct DownloadResult {
     pub status: DownloadStatus,
     /// Path to downloaded file
     pub file_path: Option<PathBuf>,
+    /// Path to generated markdown (when requested)
+    pub markdown_path: Option<PathBuf>,
     /// File size in bytes
     pub file_size: Option<u64>,
     /// SHA256 hash of the file
@@ -107,8 +130,21 @@ pub struct DownloadResult {
     pub average_speed: u64,
     /// Paper metadata (if available)
     pub metadata: Option<PaperMetadata>,
+    /// Plugin used for fallback download (if any)
+    pub used_plugin: Option<String>,
+    /// Non-fatal warning or error from post-processing
+    pub post_process_error: Option<String>,
     /// Error message if failed
     pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PluginRunnerOutput {
+    success: bool,
+    file_path: Option<String>,
+    file_size: Option<u64>,
+    error: Option<String>,
+    publisher: Option<String>,
 }
 
 /// Download queue item
@@ -328,12 +364,54 @@ impl DownloadTool {
     // #[tool] // Will be enabled when rmcp integration is complete
     #[instrument(skip(self), fields(doi = ?input.doi, url = ?input.url))]
     pub async fn download_paper(&self, input: DownloadInput) -> Result<DownloadResult> {
+        let download_id = uuid::Uuid::new_v4().to_string();
+        debug!("🆔 Generated download ID: {}", download_id);
+
+        let primary_result = self.download_paper_impl(&download_id, &input).await;
+
+        let mut result = match primary_result {
+            Ok(res) => res,
+            Err(primary_err) => {
+                if input.doi.is_some() && primary_err.is_retryable() {
+                    warn!(
+                        error = %primary_err,
+                        "Primary download failed, attempting plugin fallback"
+                    );
+                    match self.attempt_plugin_fallback(&download_id, &input).await {
+                        Ok(Some(fallback)) => fallback,
+                        Ok(None) => return Err(primary_err),
+                        Err(fallback_err) => {
+                            warn!(
+                                error = %fallback_err,
+                                "Plugin fallback failed, returning primary error"
+                            );
+                            return Err(primary_err);
+                        }
+                    }
+                } else {
+                    return Err(primary_err);
+                }
+            }
+        };
+
+        if let Err(e) = self.apply_post_processing(&input, &mut result).await {
+            warn!(error = %e, "Post-processing failed after download");
+        }
+
+        Ok(result)
+    }
+
+    async fn download_paper_impl(
+        &self,
+        download_id: &str,
+        input: &DownloadInput,
+    ) -> Result<DownloadResult> {
         debug!("📥 Starting paper download process");
         debug!("🔍 Input validation - DOI: {:?}, URL: {:?}, filename: {:?}, directory: {:?}, category: {:?}",
                input.doi, input.url, input.filename, input.directory, input.category);
         debug!(
-            "⚙️ Download settings - overwrite: {}, verify_integrity: {}",
-            input.overwrite, input.verify_integrity
+            "⚙️ Download settings - overwrite: {}, verify_integrity: {}, output_format: {:?}",
+            input.overwrite, input.verify_integrity, input.output_format
         );
 
         info!(
@@ -343,16 +421,12 @@ impl DownloadTool {
 
         // Validate input
         debug!("🔍 Validating download input parameters");
-        Self::validate_input(&input)?;
+        Self::validate_input(input)?;
         debug!("✅ Input validation passed");
-
-        // Generate download ID
-        let download_id = uuid::Uuid::new_v4().to_string();
-        debug!("🆔 Generated download ID: {}", download_id);
 
         // Get download URL and metadata
         debug!("🔎 Resolving download source for input");
-        let (download_url, metadata) = match self.resolve_download_source(&input).await {
+        let (download_url, metadata) = match self.resolve_download_source(input).await {
             Ok((url, meta)) => {
                 debug!("✅ Successfully resolved download source");
                 debug!("📄 Metadata found: {}", meta.is_some());
@@ -387,7 +461,7 @@ impl DownloadTool {
         // Determine target file path
         debug!("📁 Determining target file path");
         let file_path = match self
-            .determine_file_path(&input, metadata.as_ref(), &download_url)
+            .determine_file_path(input, metadata.as_ref(), &download_url)
             .await
         {
             Ok(path) => {
@@ -420,14 +494,17 @@ impl DownloadTool {
                     );
                     info!("File already exists and verified: {:?}", file_path);
                     return Ok(DownloadResult {
-                        download_id,
+                        download_id: download_id.to_string(),
                         status: DownloadStatus::Completed,
                         file_path: Some(file_path),
+                        markdown_path: None,
                         file_size: Some(file_size),
                         sha256_hash: Some(hash),
                         duration_seconds: 0.0,
                         average_speed: 0,
                         metadata,
+                        used_plugin: None,
+                        post_process_error: None,
                         error: None,
                     });
                 }
@@ -460,7 +537,7 @@ impl DownloadTool {
 
         match self
             .execute_download(
-                download_id.clone(),
+                download_id.to_string(),
                 download_url,
                 file_path,
                 metadata,
@@ -489,6 +566,248 @@ impl DownloadTool {
                 Err(e)
             }
         }
+    }
+
+    async fn apply_post_processing(
+        &self,
+        input: &DownloadInput,
+        result: &mut DownloadResult,
+    ) -> Result<()> {
+        if !matches!(input.output_format, DownloadOutputFormat::Markdown) {
+            return Ok(());
+        }
+
+        let Some(pdf_path) = result.file_path.clone() else {
+            result.post_process_error =
+                Some("PDF path missing for markdown conversion".to_string());
+            return Ok(());
+        };
+
+        match self.run_pdf2text(&pdf_path).await {
+            Ok(Some(markdown_path)) => {
+                result.markdown_path = Some(markdown_path);
+            }
+            Ok(None) => {
+                let message = "pdf2text did not produce markdown output".to_string();
+                warn!(message = %message, "Markdown conversion produced no output");
+                result.post_process_error = Some(message);
+            }
+            Err(e) => {
+                let message = format!("pdf2text failed: {e}");
+                warn!(error = %message, "Markdown conversion failed");
+                result.post_process_error = Some(message);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn run_pdf2text(&self, pdf_path: &Path) -> Result<Option<PathBuf>> {
+        if !pdf_path.exists() {
+            return Err(crate::Error::InvalidInput {
+                field: "pdf_path".to_string(),
+                reason: format!("PDF not found for markdown conversion: {:?}", pdf_path),
+            });
+        }
+
+        let Some(python_bin) = Self::find_python_binary().await else {
+            return Err(crate::Error::Service(
+                "Python runtime not found for pdf2text conversion".to_string(),
+            ));
+        };
+
+        let cli_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("pdf2text")
+            .join("cli.py");
+        if !cli_path.exists() {
+            return Err(crate::Error::Service(format!(
+                "pdf2text CLI not found at {:?}",
+                cli_path
+            )));
+        }
+
+        let output_dir = pdf_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.get_default_download_directory());
+
+        let mut command = Command::new(python_bin);
+        command
+            .arg(cli_path)
+            .arg("pdf")
+            .arg("--pdf-file")
+            .arg(pdf_path)
+            .arg("--output-dir")
+            .arg(&output_dir)
+            .arg("--grobid-url")
+            .arg("https://kermitt2-grobid.hf.space")
+            .arg("--no-auto-start")
+            .arg("--no-figures")
+            .arg("--no-tables")
+            .arg("--overwrite")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .current_dir(env!("CARGO_MANIFEST_DIR"));
+
+        let output = command.output().await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(crate::Error::Service(format!(
+                "pdf2text exited with {}: {}",
+                output.status, stderr
+            )));
+        }
+
+        let stem = pdf_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("paper");
+        let markdown_path = output_dir.join(stem).join(format!("{stem}.md"));
+
+        if markdown_path.exists() {
+            return Ok(Some(markdown_path));
+        }
+
+        Ok(None)
+    }
+
+    async fn attempt_plugin_fallback(
+        &self,
+        download_id: &str,
+        input: &DownloadInput,
+    ) -> Result<Option<DownloadResult>> {
+        let doi = match &input.doi {
+            Some(doi) => doi,
+            None => return Ok(None),
+        };
+
+        let Some(python_bin) = Self::find_python_binary().await else {
+            warn!("Python runtime not available, skipping plugin fallback");
+            return Ok(None);
+        };
+
+        let runner_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins")
+            .join("plugin_runner.py");
+        if !runner_path.exists() {
+            warn!("Plugin runner script not found at {:?}", runner_path);
+            return Ok(None);
+        }
+
+        let start_time = SystemTime::now();
+        let fallback_url = input
+            .url
+            .clone()
+            .unwrap_or_else(|| format!("https://plugins.local/{doi}.pdf"));
+
+        let target_path = self.determine_file_path(input, None, &fallback_url).await?;
+
+        let output_dir = target_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.get_default_download_directory());
+
+        tokio::fs::create_dir_all(&output_dir).await?;
+
+        let filename = target_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("download.pdf");
+
+        let mut command = Command::new(python_bin);
+        command
+            .arg(runner_path)
+            .arg("--doi")
+            .arg(doi)
+            .arg("--output-dir")
+            .arg(&output_dir)
+            .arg("--filename")
+            .arg(filename)
+            .arg("--headless")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .current_dir(env!("CARGO_MANIFEST_DIR"));
+
+        let output = command.output().await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(%stderr, "Plugin runner exited with non-zero status");
+            return Ok(None);
+        }
+
+        let response: PluginRunnerOutput = match serde_json::from_slice(&output.stdout) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                warn!(error = %e, "Failed to parse plugin runner response");
+                return Ok(None);
+            }
+        };
+
+        if !response.success {
+            if let Some(err) = response.error {
+                warn!(error = %err, "Plugin runner reported failure");
+            }
+            return Ok(None);
+        }
+
+        let Some(path_str) = response.file_path else {
+            warn!("Plugin runner succeeded but no file path returned");
+            return Ok(None);
+        };
+
+        let file_path = PathBuf::from(path_str);
+        let file_size = match response.file_size {
+            Some(size) => Some(size),
+            None => tokio::fs::metadata(&file_path).await.ok().map(|m| m.len()),
+        };
+
+        let duration = start_time.elapsed().unwrap_or_default();
+        let sha256_hash = if input.verify_integrity {
+            Some(self.calculate_file_hash(&file_path).await?)
+        } else {
+            None
+        };
+
+        info!(
+            "Plugin fallback succeeded for DOI {} using {}",
+            doi,
+            response
+                .publisher
+                .clone()
+                .unwrap_or_else(|| "unknown plugin".to_string())
+        );
+
+        Ok(Some(DownloadResult {
+            download_id: download_id.to_string(),
+            status: DownloadStatus::Completed,
+            file_path: Some(file_path),
+            markdown_path: None,
+            file_size,
+            sha256_hash,
+            duration_seconds: duration.as_secs_f64(),
+            average_speed: file_size.unwrap_or(0) / duration.as_secs().max(1),
+            metadata: None,
+            used_plugin: response.publisher,
+            post_process_error: None,
+            error: None,
+        }))
+    }
+
+    async fn find_python_binary() -> Option<String> {
+        for candidate in ["python3", "python"] {
+            if let Ok(output) = Command::new(candidate)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .await
+            {
+                if output.status.success() {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+        None
     }
 
     /// Download multiple papers concurrently
@@ -763,6 +1082,7 @@ impl DownloadTool {
                 .or_else(|| shared_settings.category.clone()),
             overwrite: shared_settings.overwrite,
             verify_integrity: shared_settings.verify_integrity,
+            output_format: DownloadOutputFormat::Pdf,
         })
     }
 
@@ -863,6 +1183,8 @@ impl DownloadTool {
                 max_results: 1,
                 offset: 0,
                 params: HashMap::new(),
+                sources: None,
+                metadata_sources: None,
             };
             debug!("🔍 Search query created - type: DOI, max_results: 1");
 
@@ -1742,11 +2064,14 @@ impl DownloadTool {
             download_id,
             status: DownloadStatus::Completed,
             file_path: Some(file_path.to_path_buf()),
+            markdown_path: None,
             file_size: Some(file_size),
             sha256_hash,
             duration_seconds: duration.as_secs_f64(),
             average_speed,
             metadata,
+            used_plugin: None,
+            post_process_error: None,
             error: None,
         })
     }
@@ -2172,6 +2497,7 @@ mod tests {
             category: None,
             overwrite: false,
             verify_integrity: true,
+            output_format: DownloadOutputFormat::Pdf,
         };
         assert!(DownloadTool::validate_input(&empty_input).is_err());
 
@@ -2184,6 +2510,7 @@ mod tests {
             category: None,
             overwrite: false,
             verify_integrity: true,
+            output_format: DownloadOutputFormat::Pdf,
         };
         assert!(DownloadTool::validate_input(&both_input).is_err());
 
@@ -2196,6 +2523,7 @@ mod tests {
             category: None,
             overwrite: false,
             verify_integrity: true,
+            output_format: DownloadOutputFormat::Pdf,
         };
         assert!(DownloadTool::validate_input(&valid_doi).is_ok());
 
@@ -2208,6 +2536,7 @@ mod tests {
             category: None,
             overwrite: false,
             verify_integrity: true,
+            output_format: DownloadOutputFormat::Pdf,
         };
         assert!(DownloadTool::validate_input(&valid_url).is_ok());
 
@@ -2220,6 +2549,7 @@ mod tests {
             category: None,
             overwrite: false,
             verify_integrity: true,
+            output_format: DownloadOutputFormat::Pdf,
         };
         assert!(DownloadTool::validate_input(&invalid_filename).is_err());
     }
@@ -2269,6 +2599,7 @@ mod tests {
             category: None,
             overwrite: false,
             verify_integrity: true,
+            output_format: DownloadOutputFormat::Pdf,
         };
 
         let metadata = Some(PaperMetadata::new("10.1038/test".to_string()));
@@ -2332,6 +2663,7 @@ mod tests {
             category: None,
             overwrite: false,
             verify_integrity: false,
+            output_format: DownloadOutputFormat::Pdf,
         };
 
         let metadata = PaperMetadata::new("10.1038/test".to_string());
@@ -2600,6 +2932,7 @@ mod tests {
             category: None,
             overwrite: false,
             verify_integrity: true,
+            output_format: DownloadOutputFormat::Pdf,
         };
 
         let result = DownloadTool::validate_input(&both_input);
@@ -2617,6 +2950,7 @@ mod tests {
             category: None,
             overwrite: false,
             verify_integrity: true,
+            output_format: DownloadOutputFormat::Pdf,
         };
 
         let result_neither = DownloadTool::validate_input(&neither_input);

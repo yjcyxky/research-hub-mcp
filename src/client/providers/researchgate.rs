@@ -271,6 +271,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let result = provider.search(&query, &context).await;

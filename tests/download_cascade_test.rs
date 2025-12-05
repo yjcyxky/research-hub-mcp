@@ -1,6 +1,6 @@
 use rust_research_mcp::client::meta_search::{MetaSearchClient, MetaSearchConfig};
 use rust_research_mcp::client::providers::{SearchQuery, SearchType};
-use rust_research_mcp::tools::download::{DownloadInput, DownloadTool};
+use rust_research_mcp::tools::download::{DownloadInput, DownloadOutputFormat, DownloadTool};
 use rust_research_mcp::{Config, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,6 +31,7 @@ async fn test_download_cascade_with_provider_failures() -> Result<()> {
         category: None,
         overwrite: false,
         verify_integrity: false,
+        output_format: DownloadOutputFormat::Pdf,
     };
 
     // This should attempt the cascade and eventually fail gracefully
@@ -71,6 +72,7 @@ async fn test_url_validation_error_handling() -> Result<()> {
         category: None,
         overwrite: false,
         verify_integrity: false,
+        output_format: DownloadOutputFormat::Pdf,
     };
 
     let result = download_tool.download_paper(download_input).await;
@@ -99,6 +101,7 @@ async fn test_input_validation() -> Result<()> {
         category: None,
         overwrite: false,
         verify_integrity: false,
+        output_format: DownloadOutputFormat::Pdf,
     };
 
     let result = download_tool.download_paper(download_input).await;

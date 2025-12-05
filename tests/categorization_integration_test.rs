@@ -1,7 +1,9 @@
 use rust_research_mcp::{
-    client::PaperMetadata, services::CategorizationService, tools::categorize::CategorizeInput,
-    tools::download::DownloadInput, CategorizeTool, Config, DownloadTool, MetaSearchClient,
-    SearchTool,
+    client::PaperMetadata,
+    services::CategorizationService,
+    tools::categorize::CategorizeInput,
+    tools::download::{DownloadInput, DownloadOutputFormat},
+    CategorizeTool, Config, DownloadTool, MetaSearchClient, SearchTool,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -76,6 +78,7 @@ async fn test_categorization_feature_integration() {
         category: Some("machine_learning".to_string()),
         overwrite: true,
         verify_integrity: false,
+        output_format: DownloadOutputFormat::Pdf,
     };
 
     // Note: This would fail in actual download because the DOI doesn't exist,

@@ -228,7 +228,7 @@ impl SourceProvider for ArxivProvider {
     }
 
     fn priority(&self) -> u8 {
-        80 // High priority for CS/physics/math
+        84 // High priority for CS/physics/math (after medRxiv)
     }
 
     fn base_delay(&self) -> Duration {
@@ -421,6 +421,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let url = provider.build_search_url(&query).unwrap();
@@ -443,6 +445,8 @@ mod tests {
             max_results: 1,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let url = provider.build_search_url(&query).unwrap();

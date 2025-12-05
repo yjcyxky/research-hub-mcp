@@ -119,6 +119,10 @@ vergen = {version = "8.0", features = ["build", "git", "gitcl"]}
 name = "rust-research-mcp"
 path = "src/main.rs"
 
+[[bin]]
+name = "rust-research"
+path = "src/cli.rs"
+
 [lib]
 name = "rust_research_mcp"
 path = "src/lib.rs"

@@ -32,6 +32,7 @@ struct ESearchResult {
     retmax: String,
     #[allow(dead_code)]
     retstart: String,
+    #[serde(deserialize_with = "deserialize_idlist")]
     idlist: Vec<String>,
     #[serde(default)]
     errorlist: Option<ErrorList>,
@@ -95,6 +96,42 @@ struct PmcAuthor {
 struct ArticleId {
     idtype: String,
     value: String,
+}
+
+/// Support both array and string forms for PMC idlist
+fn deserialize_idlist<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct IdListVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for IdListVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("string or list of strings")
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(vec![v.to_string()])
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element::<String>()? {
+                values.push(value);
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_any(IdListVisitor)
 }
 
 impl PubMedCentralProvider {
@@ -315,7 +352,7 @@ impl SourceProvider for PubMedCentralProvider {
     }
 
     fn priority(&self) -> u8 {
-        89 // High priority for biomedical papers
+        95 // Highest priority for biomedical papers
     }
 
     fn supports_full_text(&self) -> bool {
@@ -400,6 +437,8 @@ impl SourceProvider for PubMedCentralProvider {
             max_results: 1,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let result = self.search(&query, context).await?;
@@ -451,6 +490,22 @@ mod tests {
         assert!(provider.is_ok());
     }
 
+    #[test]
+    fn test_idlist_deserialization_supports_string_or_array() {
+        let json_array =
+            r#"{"esearchresult":{"count":"1","retmax":"1","retstart":"0","idlist":["12345"]}}"#;
+        let parsed_array: PmcSearchResponse = serde_json::from_str(json_array).unwrap();
+        assert_eq!(parsed_array.esearchresult.idlist, vec!["12345".to_string()]);
+
+        let json_single =
+            r#"{"esearchresult":{"count":"1","retmax":"1","retstart":"0","idlist":"6853299"}}"#;
+        let parsed_single: PmcSearchResponse = serde_json::from_str(json_single).unwrap();
+        assert_eq!(
+            parsed_single.esearchresult.idlist,
+            vec!["6853299".to_string()]
+        );
+    }
+
     #[tokio::test]
     async fn test_biomedical_doi_detection() {
         let provider = PubMedCentralProvider::new(None).unwrap();
@@ -470,6 +525,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         assert_eq!(
@@ -483,6 +540,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         assert_eq!(

@@ -515,6 +515,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         assert_eq!(
@@ -528,6 +530,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         assert_eq!(

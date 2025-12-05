@@ -4,11 +4,14 @@ use crate::client::providers::{
 use crate::client::PaperMetadata;
 use async_trait::async_trait;
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{
+    header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, USER_AGENT},
+    Client,
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// MDPI provider for open access journals
 ///
@@ -97,8 +100,23 @@ struct MdpiJournal {
 impl MdpiProvider {
     /// Create a new MDPI provider
     pub fn new() -> Result<Self, ProviderError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            ),
+        );
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static(
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            ),
+        );
+        headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+
         let client = Client::builder()
-            .user_agent("knowledge_accumulator_mcp/0.3.0 (Academic Research Tool)")
+            .default_headers(headers)
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| ProviderError::Network(format!("Failed to create HTTP client: {e}")))?;
@@ -474,7 +492,7 @@ impl SourceProvider for MdpiProvider {
     }
 
     fn priority(&self) -> u8 {
-        75 // Good priority for open access papers
+        82 // Preferred after medRxiv/arXiv in default ordering
     }
 
     fn supports_full_text(&self) -> bool {
@@ -500,9 +518,32 @@ impl SourceProvider for MdpiProvider {
         info!("Searching MDPI for: '{}'", query.query);
 
         let search_query = Self::build_query(query);
-        let articles = self
+        let articles = match self
             .search_mdpi(&search_query, query.max_results as usize, context)
-            .await?;
+            .await
+        {
+            Ok(articles) => articles,
+            Err(ProviderError::Network(msg)) if msg.contains("403") => {
+                warn!("MDPI returned 403 Forbidden. Returning empty result with notice.");
+                return Ok(ProviderResult {
+                    papers: vec![],
+                    source: self.name().to_string(),
+                    total_available: Some(0),
+                    search_time: Duration::from_millis(0),
+                    has_more: false,
+                    metadata: {
+                        let mut meta = HashMap::new();
+                        meta.insert(
+                            "note".to_string(),
+                            "MDPI blocked the request (403). Try again later or with different network settings."
+                                .to_string(),
+                        );
+                        meta
+                    },
+                });
+            }
+            Err(e) => return Err(e),
+        };
 
         if articles.is_empty() {
             info!("No results found in MDPI for query: '{}'", query.query);
@@ -559,6 +600,8 @@ impl SourceProvider for MdpiProvider {
             max_results: 1,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let result = self.search(&query, context).await?;
@@ -668,6 +711,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         assert_eq!(
@@ -681,6 +726,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         assert_eq!(
@@ -694,6 +741,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         assert_eq!(MdpiProvider::build_query(&doi_query), "10.3390/s21010123");

@@ -322,7 +322,7 @@ impl SourceProvider for SemanticScholarProvider {
     }
 
     fn priority(&self) -> u8 {
-        88 // High priority - between SSRN and CrossRef
+        80 // Kept in default set but after MDPI in ordering
     }
 
     fn base_delay(&self) -> Duration {

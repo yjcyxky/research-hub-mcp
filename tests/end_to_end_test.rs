@@ -1,5 +1,5 @@
 use futures::future;
-use rust_research_mcp::tools::download::{DownloadInput, DownloadTool};
+use rust_research_mcp::tools::download::{DownloadInput, DownloadOutputFormat, DownloadTool};
 use rust_research_mcp::tools::metadata::{MetadataExtractor, MetadataInput};
 use rust_research_mcp::tools::search::{SearchInput, SearchTool, SearchType};
 use rust_research_mcp::{Config, MetaSearchClient, MetaSearchConfig, Server};
@@ -84,6 +84,7 @@ async fn test_complete_paper_search_workflow() {
         category: None,
         overwrite: false,
         verify_integrity: false,
+        output_format: DownloadOutputFormat::Pdf,
     };
     let download_result = download_tool.download_paper(download_input).await;
     // Note: This might fail with mock server as we don't have actual PDF URLs

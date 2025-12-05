@@ -1,8 +1,9 @@
 use crate::client::providers::{
-    ArxivProvider, BiorxivProvider, CoreProvider, CrossRefProvider, MdpiProvider, OpenAlexProvider,
-    OpenReviewProvider, ProviderError, ProviderResult, PubMedCentralProvider, ResearchGateProvider,
-    SciHubProvider, SearchContext, SearchQuery, SearchType, SemanticScholarProvider,
-    SourceProvider, SsrnProvider, UnpaywallProvider,
+    ArxivProvider, BiorxivProvider, CoreProvider, CrossRefProvider, GoogleScholarProvider,
+    MdpiProvider, MedrxivProvider, OpenAlexProvider, OpenReviewProvider, ProviderError,
+    ProviderResult, PubMedCentralProvider, ResearchGateProvider, SciHubProvider, SearchContext,
+    SearchQuery, SearchType, SemanticScholarProvider, SourceProvider, SsrnProvider,
+    UnpaywallProvider,
 };
 use crate::client::PaperMetadata;
 use crate::Config;
@@ -12,6 +13,35 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
+
+const DEFAULT_SEARCH_SOURCES: &[&str] = &[
+    "pubmed_central",
+    "google_scholar",
+    "biorxiv",
+    "medrxiv",
+    "arxiv",
+    "mdpi",
+    "semantic_scholar",
+];
+
+const DEFAULT_METADATA_SOURCES: &[&str] = &["crossref"];
+const METADATA_ONLY_SOURCES: &[&str] = &["crossref"];
+#[allow(dead_code)]
+const OPT_IN_SOURCES: &[&str] = &[
+    "openreview",
+    "openalex",
+    "core",
+    "ssrn",
+    "unpaywall",
+    "researchgate",
+    "sci_hub",
+];
+
+#[derive(Debug, Clone)]
+struct SourceSelection {
+    search_sources: HashSet<String>,
+    metadata_sources: HashSet<String>,
+}
 
 /// Configuration for meta-search behavior
 #[derive(Debug, Clone)]
@@ -69,6 +99,8 @@ pub struct MetaSearchResult {
     pub papers: Vec<PaperMetadata>,
     /// Results grouped by source
     pub by_source: HashMap<String, Vec<PaperMetadata>>,
+    /// Metadata-only providers used for validation
+    pub metadata_only_sources: HashSet<String>,
     /// Total search time
     pub total_search_time: Duration,
     /// Number of providers that succeeded
@@ -118,6 +150,10 @@ impl MetaSearchClient {
         let providers: Vec<Arc<dyn SourceProvider>> = vec![
             // CrossRef provider (highest priority for authoritative metadata)
             Arc::new(CrossRefProvider::new(None)?), // TODO: Get email from config
+            // Google Scholar (SerpAPI-backed; metadata-first, PDF when available)
+            Arc::new(GoogleScholarProvider::new(
+                std::env::var("GOOGLE_SCHOLAR_API_KEY").ok(),
+            )?),
             // Semantic Scholar provider (very high priority for PDF access + metadata)
             Arc::new(SemanticScholarProvider::new(None)?), // TODO: Get API key from config
             // OpenAlex provider (high priority for comprehensive academic coverage)
@@ -134,6 +170,8 @@ impl MetaSearchClient {
             Arc::new(ArxivProvider::new()?),
             // bioRxiv provider (biology preprints)
             Arc::new(BiorxivProvider::new()?),
+            // medRxiv provider (clinical preprints)
+            Arc::new(MedrxivProvider::new()?),
             // OpenReview provider (high priority for ML conference papers)
             Arc::new(OpenReviewProvider::new()?),
             // MDPI provider (good priority for open access journals)
@@ -259,6 +297,81 @@ impl MetaSearchClient {
         results
     }
 
+    fn resolve_source_selection(&self, query: &SearchQuery) -> SourceSelection {
+        let default_search: HashSet<String> = DEFAULT_SEARCH_SOURCES
+            .iter()
+            .map(|s| Self::normalize_source_name(s))
+            .collect();
+        let default_metadata: HashSet<String> = DEFAULT_METADATA_SOURCES
+            .iter()
+            .map(|s| Self::normalize_source_name(s))
+            .collect();
+        let metadata_only: HashSet<String> = METADATA_ONLY_SOURCES
+            .iter()
+            .map(|s| Self::normalize_source_name(s))
+            .collect();
+
+        let mut search_sources = query
+            .sources
+            .as_ref()
+            .map(|sources| Self::normalize_sources(sources))
+            .unwrap_or_else(|| default_search.clone());
+
+        if search_sources.is_empty() {
+            search_sources = default_search;
+        }
+
+        // Remove metadata-only providers from search list
+        search_sources.retain(|s| !metadata_only.contains(s));
+
+        let mut metadata_sources = query
+            .metadata_sources
+            .as_ref()
+            .map(|sources| Self::normalize_sources(sources))
+            .unwrap_or_else(|| default_metadata.clone());
+
+        if metadata_sources.is_empty() {
+            metadata_sources = default_metadata;
+        }
+
+        // Always include metadata-only providers
+        metadata_sources.extend(metadata_only.iter().cloned());
+
+        let available: HashSet<String> = self
+            .providers
+            .iter()
+            .map(|p| p.name().to_string())
+            .collect();
+        search_sources.retain(|s| available.contains(s));
+        metadata_sources.retain(|s| available.contains(s));
+
+        SourceSelection {
+            search_sources,
+            metadata_sources,
+        }
+    }
+
+    fn normalize_sources(sources: &[String]) -> HashSet<String> {
+        sources
+            .iter()
+            .map(|s| Self::normalize_source_name(s))
+            .collect()
+    }
+
+    fn normalize_source_name(source: &str) -> String {
+        let normalized = source.trim().to_lowercase().replace([' ', '-'], "_");
+
+        match normalized.as_str() {
+            "pubmed" | "pmc" => "pubmed_central".to_string(),
+            "google" | "google_scholar" => "google_scholar".to_string(),
+            "semanticscholar" => "semantic_scholar".to_string(),
+            "bioxiv" => "biorxiv".to_string(),
+            "medrxiv" => "medrxiv".to_string(),
+            "scihub" => "sci_hub".to_string(),
+            other => other.to_string(),
+        }
+    }
+
     /// Search across multiple providers
     pub async fn search(&self, query: &SearchQuery) -> Result<MetaSearchResult, ProviderError> {
         let start_time = Instant::now();
@@ -270,8 +383,17 @@ impl MetaSearchClient {
         // Create search context
         let context = self.create_search_context();
 
+        let source_selection = self.resolve_source_selection(query);
+        info!(
+            "Active sources -> search: {:?}, metadata: {:?}",
+            source_selection.search_sources, source_selection.metadata_sources
+        );
+
         // Filter providers based on query type and supported features
-        let suitable_providers = self.filter_providers_for_query(query);
+        let suitable_providers =
+            self.filter_providers_for_query(query, &source_selection.search_sources);
+        let metadata_providers =
+            self.filter_metadata_providers(query, &source_selection.metadata_sources);
         info!(
             "Using {} providers for search: {:?}",
             suitable_providers.len(),
@@ -281,13 +403,40 @@ impl MetaSearchClient {
                 .collect::<Vec<_>>()
         );
 
+        if !metadata_providers.is_empty() {
+            info!(
+                "Using {} metadata providers: {:?}",
+                metadata_providers.len(),
+                metadata_providers
+                    .iter()
+                    .map(|p| p.name())
+                    .collect::<Vec<_>>()
+            );
+        }
+
         // Search providers in parallel
         let (provider_results, provider_errors) = self
             .execute_parallel_search(suitable_providers, query, &context)
             .await;
 
+        let (metadata_results, metadata_errors) = if metadata_providers.is_empty() {
+            (Vec::new(), HashMap::new())
+        } else {
+            self.execute_parallel_search(metadata_providers, query, &context)
+                .await
+        };
+
+        let mut combined_errors = provider_errors;
+        combined_errors.extend(metadata_errors);
+
         // Aggregate results
-        let meta_result = self.aggregate_results(&provider_results, provider_errors, start_time);
+        let meta_result = self.aggregate_results(
+            &provider_results,
+            &metadata_results,
+            combined_errors,
+            start_time,
+            &source_selection.metadata_sources,
+        );
 
         info!(
             "Meta-search completed: {} total papers from {} providers in {:?}",
@@ -419,23 +568,66 @@ impl MetaSearchClient {
     }
 
     /// Filter providers based on query characteristics
-    fn filter_providers_for_query(&self, query: &SearchQuery) -> Vec<Arc<dyn SourceProvider>> {
+    fn filter_providers_for_query(
+        &self,
+        query: &SearchQuery,
+        allowed_sources: &HashSet<String>,
+    ) -> Vec<Arc<dyn SourceProvider>> {
         let mut suitable = Vec::new();
 
         for provider in &self.providers {
+            let provider_name = provider.name().to_string();
+
+            if !allowed_sources.contains(&provider_name) {
+                continue;
+            }
+
             // Check if provider supports the search type
-            if provider
+            let supports_search_type = provider
                 .supported_search_types()
                 .contains(&query.search_type)
                 || provider
                     .supported_search_types()
-                    .contains(&SearchType::Auto)
-            {
+                    .contains(&SearchType::Auto);
+
+            // For Auto searches, allow providers that support keyword searches even without explicit Auto support
+            let supports_auto_via_keywords = query.search_type == SearchType::Auto
+                && provider
+                    .supported_search_types()
+                    .contains(&SearchType::Keywords);
+
+            if supports_search_type || supports_auto_via_keywords {
                 suitable.push(provider.clone());
             }
         }
 
         // Apply intelligent priority ordering based on query characteristics
+        Self::apply_intelligent_priority_ordering(&mut suitable, query);
+
+        suitable
+    }
+
+    /// Filter providers that are designated for metadata validation/enrichment
+    fn filter_metadata_providers(
+        &self,
+        query: &SearchQuery,
+        metadata_sources: &HashSet<String>,
+    ) -> Vec<Arc<dyn SourceProvider>> {
+        let mut suitable = self
+            .providers
+            .iter()
+            .filter(|provider| metadata_sources.contains(provider.name()))
+            .filter(|provider| {
+                provider
+                    .supported_search_types()
+                    .contains(&query.search_type)
+                    || provider
+                        .supported_search_types()
+                        .contains(&SearchType::Auto)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
         Self::apply_intelligent_priority_ordering(&mut suitable, query);
 
         suitable
@@ -969,18 +1161,22 @@ impl MetaSearchClient {
     fn aggregate_results(
         &self,
         provider_results: &[(String, ProviderResult)],
+        metadata_results: &[(String, ProviderResult)],
         provider_errors: HashMap<String, String>,
         start_time: Instant,
+        metadata_only_sources: &HashSet<String>,
     ) -> MetaSearchResult {
         let mut all_papers = Vec::new();
         let mut by_source = HashMap::new();
         let mut provider_metadata = HashMap::new();
 
-        // Collect all papers and organize by source
-        for (source, result) in provider_results {
+        // Collect all papers and organize by source (including metadata providers)
+        for (source, result) in provider_results.iter().chain(metadata_results.iter()) {
+            if !metadata_only_sources.contains(source) {
+                all_papers.extend(result.papers.clone());
+            }
             by_source.insert(source.clone(), result.papers.clone());
             provider_metadata.insert(source.clone(), result.metadata.clone());
-            all_papers.extend(result.papers.clone());
         }
 
         // Deduplicate if requested
@@ -1001,10 +1197,11 @@ impl MetaSearchClient {
             papers: all_papers,
             by_source,
             total_search_time: start_time.elapsed(),
-            successful_providers: provider_results.len(),
+            successful_providers: provider_results.len() + metadata_results.len(),
             failed_providers: provider_errors.len(),
             provider_errors,
             provider_metadata,
+            metadata_only_sources: metadata_only_sources.clone(),
         }
     }
 
@@ -1146,8 +1343,11 @@ mod tests {
         let providers = client.providers();
         assert!(providers.contains(&"arxiv".to_string()));
         assert!(providers.contains(&"biorxiv".to_string()));
+        assert!(providers.contains(&"medrxiv".to_string()));
         assert!(providers.contains(&"core".to_string()));
         assert!(providers.contains(&"crossref".to_string()));
+        assert!(providers.contains(&"google_scholar".to_string()));
+        assert!(providers.contains(&"pubmed_central".to_string()));
         assert!(providers.contains(&"semantic_scholar".to_string()));
         assert!(providers.contains(&"unpaywall".to_string()));
         assert!(providers.contains(&"ssrn".to_string()));

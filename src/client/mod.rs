@@ -31,6 +31,8 @@
 //!     max_results: 10,
 //!     offset: 0,
 //!     params: std::collections::HashMap::new(),
+//!     sources: None,
+//!     metadata_sources: None,
 //! };
 //!
 //! let results = client.search(&query).await?;

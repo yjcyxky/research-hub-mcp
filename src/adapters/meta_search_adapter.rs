@@ -123,11 +123,27 @@ impl MetaSearchAdapter {
     /// Generate cache key for search input
     fn generate_cache_key(input: &SearchInput) -> String {
         format!(
-            "{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}",
             input.query.to_lowercase(),
             serde_json::to_string(&input.search_type).unwrap_or_default(),
             input.limit,
-            input.offset
+            input.offset,
+            Self::normalize_sources_for_cache(&input.sources),
+            Self::normalize_sources_for_cache(&input.metadata_sources)
+        )
+    }
+
+    fn normalize_sources_for_cache(sources: &Option<Vec<String>>) -> String {
+        sources.as_ref().map_or_else(
+            || "default".to_string(),
+            |list| {
+                let mut normalized: Vec<String> = list
+                    .iter()
+                    .map(|s| s.trim().to_lowercase().replace([' ', '-'], "_"))
+                    .collect();
+                normalized.sort();
+                normalized.join("|")
+            },
         )
     }
 
@@ -274,6 +290,8 @@ impl SearchServicePort for MetaSearchAdapter {
             max_results: input.limit,
             offset: input.offset,
             params: HashMap::new(),
+            sources: input.sources.clone(),
+            metadata_sources: input.metadata_sources.clone(),
         };
 
         // Execute meta-search
@@ -425,6 +443,8 @@ mod tests {
             search_type: crate::tools::search::SearchType::Title,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
 
         let key1 = MetaSearchAdapter::generate_cache_key(&input);
@@ -447,6 +467,8 @@ mod tests {
             search_type: crate::tools::search::SearchType::Title,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
 
         let result = SearchResult {
@@ -460,6 +482,11 @@ mod tests {
             search_time_ms: 100,
             source_mirror: None,
             category: None,
+            successful_providers: Vec::new(),
+            failed_providers: Vec::new(),
+            metadata_providers: Vec::new(),
+            provider_errors: HashMap::new(),
+            papers_per_provider: HashMap::new(),
         };
 
         let cache_key = MetaSearchAdapter::generate_cache_key(&input);
