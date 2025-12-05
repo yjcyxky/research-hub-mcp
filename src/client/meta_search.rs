@@ -875,6 +875,15 @@ impl MetaSearchClient {
                 // All providers are generally good for title searches
                 2 // Small boost for all
             }
+            SearchType::TitleAbstract => {
+                // Treat similar to keyword/semantic search
+                match provider_name {
+                    "semantic_scholar" => 8,
+                    "core" => 6,
+                    "unpaywall" => 4,
+                    _ => 2,
+                }
+            }
             SearchType::Keywords => {
                 // Keyword searches benefit from full-text providers
                 match provider_name {

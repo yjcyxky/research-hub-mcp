@@ -51,6 +51,8 @@ pub enum SearchType {
     Author,
     /// Search by combination of author and year
     AuthorYear,
+    /// Search by title and abstract combined
+    TitleAbstract,
 }
 
 /// Result of a paper search operation
@@ -437,6 +439,7 @@ impl SearchTool {
             SearchType::Auto => ProviderSearchType::Auto,
             SearchType::Doi => ProviderSearchType::Doi,
             SearchType::Title => ProviderSearchType::Title,
+            SearchType::TitleAbstract => ProviderSearchType::TitleAbstract,
             SearchType::Author => ProviderSearchType::Author,
             SearchType::AuthorYear => ProviderSearchType::Keywords, // Fallback to keywords
         }
@@ -854,6 +857,10 @@ mod tests {
         assert!(matches!(
             SearchTool::convert_search_type(&SearchType::AuthorYear),
             ProviderSearchType::Keywords
+        ));
+        assert!(matches!(
+            SearchTool::convert_search_type(&SearchType::TitleAbstract),
+            ProviderSearchType::TitleAbstract
         ));
     }
 

@@ -311,6 +311,7 @@ impl SourceProvider for SemanticScholarProvider {
         vec![
             SearchType::Doi,
             SearchType::Title,
+            SearchType::TitleAbstract,
             SearchType::Author,
             SearchType::Keywords,
             SearchType::Auto,

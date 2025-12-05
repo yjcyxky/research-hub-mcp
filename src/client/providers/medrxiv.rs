@@ -20,7 +20,8 @@ struct MedrxivResponse {
 #[derive(Debug, Deserialize)]
 struct MedrxivMessage {
     status: String,
-    text: String,
+    #[serde(default)]
+    text: Option<String>,
 }
 
 /// Individual paper from medRxiv API
@@ -77,11 +78,26 @@ impl MedrxivProvider {
     }
 
     /// Build search URL for medRxiv API (by date range)
-    fn build_date_search_url(&self, start_date: &str, end_date: &str) -> String {
-        format!(
-            "{}/details/medrxiv/{}/{}",
-            self.base_url, start_date, end_date
-        )
+    fn build_date_search_url(
+        &self,
+        start_date: &str,
+        end_date: &str,
+        query: Option<&str>,
+    ) -> String {
+        if let Some(q) = query {
+            format!(
+                "{}/details/medrxiv/{}/{}/{}",
+                self.base_url,
+                start_date,
+                end_date,
+                urlencoding::encode(q)
+            )
+        } else {
+            format!(
+                "{}/details/medrxiv/{}/{}",
+                self.base_url, start_date, end_date
+            )
+        }
     }
 
     /// Extract medRxiv DOI from common formats
@@ -181,7 +197,7 @@ impl MedrxivProvider {
         // Check for error messages
         for message in &medrxiv_response.messages {
             if message.status != "ok" {
-                warn!("medRxiv API message: {}", message.text);
+                warn!("medRxiv API message: {:?}", message.text);
             }
         }
 
@@ -198,6 +214,7 @@ impl MedrxivProvider {
         &self,
         days_back: u32,
         limit: u32,
+        query: Option<&str>,
     ) -> Result<Vec<PaperMetadata>, ProviderError> {
         use chrono::{Duration as ChronoDuration, Utc};
 
@@ -208,7 +225,7 @@ impl MedrxivProvider {
         let start_date_str = start_date.format("%Y-%m-%d").to_string();
         let end_date_str = end_date.format("%Y-%m-%d").to_string();
 
-        let url = self.build_date_search_url(&start_date_str, &end_date_str);
+        let url = self.build_date_search_url(&start_date_str, &end_date_str, query);
         debug!("Searching medRxiv by date range: {}", url);
 
         let response = self
@@ -240,7 +257,7 @@ impl MedrxivProvider {
 
         for message in &medrxiv_response.messages {
             if message.status != "ok" {
-                warn!("medRxiv API message: {}", message.text);
+                warn!("medRxiv API message: {:?}", message.text);
             }
         }
 
@@ -267,7 +284,12 @@ impl SourceProvider for MedrxivProvider {
     }
 
     fn supported_search_types(&self) -> Vec<SearchType> {
-        vec![SearchType::Doi, SearchType::Keywords, SearchType::Auto]
+        vec![
+            SearchType::Doi,
+            SearchType::Keywords,
+            SearchType::TitleAbstract,
+            SearchType::Auto,
+        ]
     }
 
     fn supports_full_text(&self) -> bool {
@@ -306,9 +328,17 @@ impl SourceProvider for MedrxivProvider {
                     Vec::new()
                 }
             }
-            SearchType::Keywords | SearchType::Auto => {
-                warn!("medRxiv API is limited for keyword search; returning recent clinical preprints");
-                self.search_recent_papers(30, query.max_results).await?
+            SearchType::Keywords | SearchType::TitleAbstract | SearchType::Auto => {
+                match self
+                    .search_recent_papers(365, query.max_results, Some(&query.query))
+                    .await
+                {
+                    Ok(papers) => papers,
+                    Err(e) => {
+                        warn!("medRxiv keyword search failed: {}", e);
+                        Vec::new()
+                    }
+                }
             }
             _ => {
                 warn!(

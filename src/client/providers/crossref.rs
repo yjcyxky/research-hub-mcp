@@ -113,6 +113,9 @@ impl CrossRefProvider {
             SearchType::Title => {
                 params.push(("query.title", query.query.clone()));
             }
+            SearchType::TitleAbstract => {
+                params.push(("query.bibliographic", query.query.clone()));
+            }
             SearchType::Author => {
                 params.push(("query.author", query.query.clone()));
             }
@@ -215,6 +218,7 @@ impl SourceProvider for CrossRefProvider {
             SearchType::Auto,
             SearchType::Doi,
             SearchType::Title,
+            SearchType::TitleAbstract,
             SearchType::Author,
             SearchType::Keywords,
         ]

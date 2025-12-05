@@ -163,7 +163,10 @@ impl OpenReviewProvider {
                 // Search in authors field
                 query.query.clone()
             }
-            SearchType::Keywords | SearchType::Auto | SearchType::Subject => {
+            SearchType::TitleAbstract
+            | SearchType::Keywords
+            | SearchType::Auto
+            | SearchType::Subject => {
                 // General search across title and abstract
                 query.query.clone()
             }
@@ -355,6 +358,7 @@ impl SourceProvider for OpenReviewProvider {
     fn supported_search_types(&self) -> Vec<SearchType> {
         vec![
             SearchType::Title,
+            SearchType::TitleAbstract,
             SearchType::Author,
             SearchType::Keywords,
             SearchType::Auto,

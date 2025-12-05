@@ -128,6 +128,11 @@ pub enum SearchType {
     /// May return multiple papers by the same author.
     Author,
 
+    /// Search by title and abstract combined.
+    ///
+    /// This is useful for broader semantic searches when exact title is unknown.
+    TitleAbstract,
+
     /// Search by keywords or free text.
     ///
     /// Example: "machine learning transformer neural networks"

@@ -104,6 +104,7 @@ enum SearchMode {
     Title,
     Author,
     AuthorYear,
+    TitleAbstract,
 }
 
 impl From<SearchMode> for ToolSearchType {
@@ -114,6 +115,7 @@ impl From<SearchMode> for ToolSearchType {
             SearchMode::Title => Self::Title,
             SearchMode::Author => Self::Author,
             SearchMode::AuthorYear => Self::AuthorYear,
+            SearchMode::TitleAbstract => Self::TitleAbstract,
         }
     }
 }

@@ -133,7 +133,7 @@ impl OpenAlexProvider {
                     return Err(ProviderError::InvalidQuery("Empty query".to_string()));
                 }
             }
-            SearchType::Keywords | SearchType::Auto => {
+            SearchType::TitleAbstract | SearchType::Keywords | SearchType::Auto => {
                 // For keywords/auto, search in abstract or use default search
                 if !query.query.trim().is_empty() {
                     format!("default.search:{}", query.query)
@@ -296,6 +296,7 @@ impl SourceProvider for OpenAlexProvider {
     fn supported_search_types(&self) -> Vec<SearchType> {
         vec![
             SearchType::Title,
+            SearchType::TitleAbstract,
             SearchType::Author,
             SearchType::Doi,
             SearchType::Keywords,

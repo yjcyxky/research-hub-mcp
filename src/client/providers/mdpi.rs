@@ -414,7 +414,10 @@ impl MdpiProvider {
                 // Direct DOI search
                 query.query.clone()
             }
-            SearchType::Keywords | SearchType::Auto | SearchType::Subject => {
+            SearchType::Keywords
+            | SearchType::TitleAbstract
+            | SearchType::Auto
+            | SearchType::Subject => {
                 // General search
                 query.query.clone()
             }
@@ -502,6 +505,7 @@ impl SourceProvider for MdpiProvider {
     fn supported_search_types(&self) -> Vec<SearchType> {
         vec![
             SearchType::Title,
+            SearchType::TitleAbstract,
             SearchType::Author,
             SearchType::Doi,
             SearchType::Keywords,

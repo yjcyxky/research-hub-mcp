@@ -77,6 +77,10 @@ impl ArxivProvider {
         let search_query = match query.search_type {
             SearchType::Doi => format!("doi:{query}", query = query.query),
             SearchType::Title => format!("ti:\"{query}\"", query = query.query),
+            SearchType::TitleAbstract => {
+                // Title/abstract combined: use all fields
+                format!("ti:\"{query}\" OR abs:\"{query}\"", query = query.query)
+            }
             SearchType::Author => format!("au:\"{query}\"", query = query.query),
             SearchType::Keywords | SearchType::Auto => {
                 // For auto/keywords, search in title, abstract, and comments
@@ -216,6 +220,7 @@ impl SourceProvider for ArxivProvider {
         vec![
             SearchType::Auto,
             SearchType::Title,
+            SearchType::TitleAbstract,
             SearchType::Author,
             SearchType::Keywords,
             SearchType::Subject,

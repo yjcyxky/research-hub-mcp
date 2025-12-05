@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
@@ -58,7 +59,7 @@ struct WarningList {
 
 #[derive(Debug, Deserialize)]
 struct PmcFetchResponse {
-    result: HashMap<String, PmcArticle>,
+    result: HashMap<String, Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -249,7 +250,21 @@ impl PubMedCentralProvider {
             ProviderError::Parse(format!("Failed to parse PMC fetch response: {e}"))
         })?;
 
-        Ok(fetch_result.result.into_values().collect())
+        // The PMC response includes a "uids" array plus one object per UID. Filter and deserialize objects only.
+        let mut articles = Vec::new();
+        for (key, value) in fetch_result.result {
+            if key == "uids" {
+                continue;
+            }
+            if value.is_object() {
+                match serde_json::from_value::<PmcArticle>(value) {
+                    Ok(article) => articles.push(article),
+                    Err(e) => warn!("Failed to parse PMC article {}: {}", key, e),
+                }
+            }
+        }
+
+        Ok(articles)
     }
 
     /// Build query string for different search types
@@ -262,6 +277,10 @@ impl PubMedCentralProvider {
             SearchType::Title => {
                 // Search in title field
                 format!("{}[title]", query.query)
+            }
+            SearchType::TitleAbstract => {
+                // Search in title/abstract combined
+                format!("{}[tiab]", query.query)
             }
             SearchType::Author => {
                 // Search in author field
@@ -367,6 +386,7 @@ impl SourceProvider for PubMedCentralProvider {
         vec![
             SearchType::Doi,
             SearchType::Title,
+            SearchType::TitleAbstract,
             SearchType::Author,
             SearchType::Keywords,
             SearchType::Auto,
