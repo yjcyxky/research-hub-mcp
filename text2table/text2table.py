@@ -4,19 +4,21 @@ from __future__ import annotations
 text2table
 ----------
 
-Pipeline for converting free-form text into Markdown tables by combining entity
-recognition (GLiNER) and table-focused generation with Qwen.
+Pipeline for converting free-form text into Markdown tables by combining
+optional entity recognition (GLiNER service) and table-focused generation
+through a vLLM OpenAI-compatible endpoint.
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING, Any
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
+
+from text2table.client import GLiNERClient, RetryPolicy, VLLMClient
 
 if TYPE_CHECKING:  # pragma: no cover
-    import torch
     from gliner import GLiNER
-    from transformers import AutoModelForCausalLM, AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -38,119 +40,136 @@ def _normalize_labels(labels: Sequence[str]) -> List[str]:
     return cleaned
 
 
-def _infer_device_from_map(model: "AutoModelForCausalLM") -> "torch.device":
-    import torch
-
-    if hasattr(model, "hf_device_map") and isinstance(model.hf_device_map, dict):
-        device_value = next(iter(model.hf_device_map.values()))
-        if isinstance(device_value, str):
-            return torch.device(device_value)
-    if hasattr(model, "device"):
-        return model.device  # type: ignore[arg-type]
-    return torch.device("cpu")
-
-
 @dataclass
 class Text2Table:
-    """Convert text to a Markdown table using GLiNER entities and a Qwen LLM."""
+    """Convert text to a Markdown table using GLiNER entities and a vLLM service."""
 
     labels: Sequence[str]
-    gliner_model_name: str = "Ihor/gliner-biomed-large-v1.0"
-    qwen_model_name: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    gliner_model_name: Optional[str] = "Ihor/gliner-biomed-large-v1.0"
+    qwen_model_name: Optional[str] = None  # If None, use server default
     threshold: float = 0.5
-    cache_dir: Optional[Path] = None
-    trust_remote_code: bool = True
-    device: Optional[str] = None
+    gliner_cache_dir: Optional[Path] = None
+    gliner_device: Optional[str] = None
     enable_thinking: bool = False
+    max_reasoning_tokens: Optional[int] = 2048
+    server_url: Optional[str] = None  # vLLM server URL (required to run)
+    gliner_url: Optional[str] = None  # GLiNER service URL (required when use_gliner is True)
+    use_gliner: bool = True
+    api_key: str = "dummy-key"
+    gliner_api_key: Optional[str] = None
+    request_timeout: float = 120.0
+    pool_size: int = 10
+    max_retries: int = 3
+    backoff_factor: float = 1.5
+    max_backoff: float = 10.0
 
+    _vllm_client: Optional[Any] = field(init=False, default=None)
+    _gliner_client: Optional[Any] = field(init=False, default=None)
     _gliner: Optional["GLiNER"] = field(init=False, default=None)
-    _tokenizer: Optional["AutoTokenizer"] = field(init=False, default=None)
-    _llm: Optional["AutoModelForCausalLM"] = field(init=False, default=None)
-    _inference_device: Optional["Any"] = field(init=False, default=None)
+    _retry_policy: Optional[Any] = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self.labels = _normalize_labels(self.labels)
         if not 0 < self.threshold <= 1:
             raise ValueError("Threshold must be between 0 and 1.")
 
-    def _load_gliner(self) -> "GLiNER":
-        from gliner import GLiNER
-
-        logger.info("Loading GLiNER model: %s", self.gliner_model_name)
-        kwargs: Dict[str, object] = {}
-        if self.cache_dir:
-            kwargs["cache_dir"] = str(self.cache_dir)
-        self._gliner = GLiNER.from_pretrained(self.gliner_model_name, **kwargs)
-        if self.device:
-            try:
-                self._gliner.to(self.device)
-            except Exception:
-                logger.warning("Unable to move GLiNER model to device %s", self.device)
-        return self._gliner
-
-    def _load_qwen(self) -> Tuple["AutoTokenizer", "AutoModelForCausalLM"]:
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-
-        logger.info("Loading Qwen model: %s", self.qwen_model_name)
-        kwargs: Dict[str, object] = {"trust_remote_code": self.trust_remote_code}
-        if self.cache_dir:
-            kwargs["cache_dir"] = str(self.cache_dir)
-
-        tokenizer = AutoTokenizer.from_pretrained(self.qwen_model_name, **kwargs)
-        if tokenizer.pad_token_id is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        if torch.cuda.is_available():
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        else:
-            dtype = torch.float32
-
-        target_device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
-        device_map: Optional[str] = "auto" if target_device != "cpu" else None
-
-        model = AutoModelForCausalLM.from_pretrained(
-            self.qwen_model_name,
-            torch_dtype=dtype,
-            device_map=device_map,
-            **kwargs,
+        # Allow env vars to define service endpoints
+        self.server_url = self.server_url or os.getenv("TEXT2TABLE_VLLM_URL")
+        self.gliner_url = self.gliner_url or os.getenv("TEXT2TABLE_GLINER_URL")
+        self._retry_policy = RetryPolicy(
+            attempts=self.max_retries,
+            backoff_factor=self.backoff_factor,
+            max_backoff=self.max_backoff,
         )
-        if device_map is None and target_device:
-            model.to(target_device)
-        model.eval()
-
-        inference_device = _infer_device_from_map(model)
-        self._tokenizer = tokenizer
-        self._llm = model
-        self._inference_device = inference_device
-        logger.info("Qwen inference device: %s", inference_device)
-        return tokenizer, model
 
     @property
-    def gliner(self) -> GLiNER:
-        if self._gliner is None:
-            self._load_gliner()
-        return self._gliner  # type: ignore[return-value]
+    def retry_policy(self):
+        return self._retry_policy
 
-    @property
-    def tokenizer(self) -> "AutoTokenizer":
-        if self._tokenizer is None:
-            self._load_qwen()
-        return self._tokenizer  # type: ignore[return-value]
+    def _get_vllm_client(self) -> "Any":
+        if not self.server_url:
+            raise ValueError("server_url is required. Local mode has been removed.")
+        if self._vllm_client is None:
+            self._vllm_client = VLLMClient(
+                base_url=self.server_url,
+                api_key=self.api_key,
+                timeout=self.request_timeout,
+                pool_size=self.pool_size,
+                retry_policy=self.retry_policy,
+            )
+        return self._vllm_client
 
-    @property
-    def llm(self) -> "AutoModelForCausalLM":
-        if self._llm is None:
-            self._load_qwen()
-        return self._llm  # type: ignore[return-value]
+    def _get_gliner_client(self) -> "Any":
+        if self._gliner_client is None:
+            if not self.gliner_url:
+                raise ValueError(
+                    "gliner_url is required when use_gliner=True. "
+                    "Set TEXT2TABLE_GLINER_URL or provide gliner_url explicitly."
+                )
+            self._gliner_client = GLiNERClient(
+                base_url=self.gliner_url,
+                api_key=self.gliner_api_key,
+                timeout=self.request_timeout,
+                pool_size=self.pool_size,
+                retry_policy=self.retry_policy,
+                default_model=self.gliner_model_name,
+            )
+        return self._gliner_client
 
     def extract_entities(self, text: str) -> List[Dict[str, object]]:
-        logger.debug("Running GLiNER with threshold=%s", self.threshold)
-        entities = self.gliner.predict_entities(text, list(self.labels), threshold=self.threshold)
-        entities = sorted(entities, key=lambda e: (e.get("start", 0), -(e.get("score", 0) or 0)))
+        if not self.use_gliner:
+            logger.info("GLiNER extraction disabled; skipping entity extraction.")
+            return []
+        if self.gliner_url:
+            client = self._get_gliner_client()
+            entities = client.extract_entities(
+                text, self.labels, self.threshold, model=self.gliner_model_name
+            )
+        else:
+            entities = self._extract_entities_local(text)
+        entities = sorted(
+            entities,
+            key=lambda e: (e.get("start", 0), -(e.get("score", 0) or 0)),
+        )
+        return entities
+
+    def _load_gliner_local(self) -> "GLiNER":
+        from gliner import GLiNER
+
+        logger.info("Loading local GLiNER model: %s", self.gliner_model_name)
+        kwargs: Dict[str, object] = {}
+        if self.gliner_cache_dir:
+            kwargs["cache_dir"] = str(self.gliner_cache_dir)
+        self._gliner = GLiNER.from_pretrained(self.gliner_model_name, **kwargs)
+        if self.gliner_device:
+            try:
+                self._gliner.to(self.gliner_device)
+            except Exception:
+                logger.warning(
+                    "Unable to move GLiNER model to device %s", self.gliner_device
+                )
+        return self._gliner
+
+    @property
+    def gliner(self) -> "GLiNER":
+        if self._gliner is None:
+            self._load_gliner_local()
+        return self._gliner  # type: ignore[return-value]
+
+    def _extract_entities_local(self, text: str) -> List[Dict[str, object]]:
+        logger.debug("Running local GLiNER with threshold=%s", self.threshold)
+        try:
+            entities = self.gliner.predict_entities(
+                text, list(self.labels), threshold=self.threshold
+            )
+        except Exception as exc:
+            logger.error("Local GLiNER failed: %s", exc)
+            raise
         return entities
 
     def _format_entities(self, entities: List[Dict[str, object]]) -> str:
+        if not self.use_gliner:
+            return "- Entity extraction disabled; infer entities directly from the source text."
         if not entities:
             return "- No entities were found with the current threshold."
 
@@ -181,7 +200,7 @@ class Text2Table:
         entity_block = self._format_entities(entities)
         header = ", ".join(self.labels)
         instruction = user_prompt.strip() if user_prompt else DEFAULT_USER_PROMPT
-        
+
         if self.enable_thinking:
             prompt = (
                 "You are a structured information extraction assistant. "
@@ -195,7 +214,7 @@ class Text2Table:
 
                 f"User instruction (style/formatting hints): {instruction}\n\n"
 
-                "Extracted entities:\n"
+                "Extracted entities or instructions:\n"
                 f"{entity_block}\n\n"
 
                 "Source text:\n"
@@ -224,7 +243,7 @@ class Text2Table:
 
                 f"User instruction (style/formatting hints): {instruction}\n\n"
 
-                "Extracted entities:\n"
+                "Extracted entities or instructions:\n"
                 f"{entity_block}\n\n"
 
                 "Source text:\n"
@@ -239,10 +258,7 @@ class Text2Table:
         temperature: float = 0.2,
         top_p: float = 0.9,
     ) -> str:
-        import torch
-
-        tokenizer = self.tokenizer
-        model = self.llm
+        reasoning_tokens: Optional[int] = None
 
         if self.enable_thinking:
             system_content = (
@@ -253,6 +269,11 @@ class Text2Table:
             )
             # Increase max_new_tokens to accommodate thinking content
             effective_max_tokens = max(max_new_tokens, 1024)
+            reasoning_tokens = (
+                self.max_reasoning_tokens
+                if self.max_reasoning_tokens and self.max_reasoning_tokens > 0
+                else max(effective_max_tokens * 2, 1024)
+            )
         else:
             system_content = (
                 "You convert extracted entities into concise Markdown tables. "
@@ -265,44 +286,70 @@ class Text2Table:
             {"role": "system", "content": system_content},
             {"role": "user", "content": prompt},
         ]
-        chat_prompt = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+
+        client = self._get_vllm_client()
+        logger.debug(
+            "Calling vLLM with max_tokens=%d, temperature=%.2f, top_p=%.2f",
+            effective_max_tokens,
+            temperature,
+            top_p,
         )
-        inputs = tokenizer(chat_prompt, return_tensors="pt")
-        if self._inference_device:
-            inputs = {k: v.to(self._inference_device) for k, v in inputs.items()}
+        if reasoning_tokens:
+            logger.debug("Requesting reasoning tokens: %d", reasoning_tokens)
+        logger.debug("System message length: %d", len(system_content))
+        logger.debug("User message length: %d", len(prompt))
+        logger.debug(
+            "User message preview: %s",
+            prompt[:200] if len(prompt) > 200 else prompt,
+        )
+        generated_text = client.generate(
+            messages=messages,
+            model=self.qwen_model_name,
+            max_tokens=effective_max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            max_reasoning_tokens=reasoning_tokens,
+        )
+        logger.info("Received text from vLLM (length: %d)", len(generated_text))
+        if generated_text:
+            logger.info("First 500 chars: %s", repr(generated_text[:500]))
+        else:
+            logger.warning("Generated text is empty!")
+        return generated_text.strip() if generated_text else ""
 
-        with torch.no_grad():
-            output = model.generate(
-                **inputs,
-                max_new_tokens=effective_max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                do_sample=temperature > 0,
-                pad_token_id=tokenizer.pad_token_id,
-            )
-
-        generated_tokens = output[0][inputs["input_ids"].shape[-1] :]
-        generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-        return generated_text.strip()
-    
     def _parse_thinking_output(self, output: str) -> Tuple[str, str]:
         """Parse output to separate thinking and final result.
         
         Returns:
             Tuple of (thinking_text, final_result)
         """
-        thinking_start = output.find("<think>")
-        thinking_end = output.find("</think>")
-        
-        if thinking_start != -1 and thinking_end != -1:
-            # Extract thinking content (skip the <think> tag, which is 7 characters)
-            thinking_text = output[thinking_start + 7 : thinking_end].strip()
-            # Extract final result (skip the </think> tag, which is 8 characters)
-            final_result = output[thinking_end + 8 :].strip()
+        # Look for <think> tags (as specified in build_prompt)
+        start_tag = "<think>"
+        end_tag = "</think>"
+
+        thinking_start = output.find(start_tag)
+        thinking_end = output.find(end_tag)
+
+        if thinking_start != -1 and thinking_end != -1 and thinking_end > thinking_start:
+            # Extract thinking content (skip the start tag)
+            thinking_text = output[thinking_start + len(start_tag) : thinking_end].strip()
+            # Extract final result (skip the end tag)
+            final_result = output[thinking_end + len(end_tag) :].strip()
+            logger.debug(
+                "Parsed thinking output: thinking_len=%d, result_len=%d",
+                len(thinking_text),
+                len(final_result),
+            )
             return thinking_text, final_result
         else:
             # No thinking tags found, return empty thinking and full output as result
+            logger.info(
+                "No thinking tags found in output (length: %d), returning full output as result",
+                len(output),
+            )
+            if output:
+                logger.debug("First 500 chars of output: %s", output[:500])
+            # Even if no tags found, return the full output as the result
             return "", output
 
     def run(
@@ -313,12 +360,7 @@ class Text2Table:
         temperature: float = 0.2,
         top_p: float = 0.9,
     ) -> Tuple[str, List[Dict[str, object]]]:
-        """Run the text2table pipeline.
-        
-        Returns:
-            Tuple of (table, entities). If thinking mode is enabled, table will contain
-            both thinking and final result separated by thinking tags.
-        """
+        """Run the text2table pipeline in normal mode."""
         entities = self.extract_entities(text)
         prompt = self.build_prompt(text, entities, user_prompt=user_prompt)
         output = self.generate_table(
@@ -327,15 +369,18 @@ class Text2Table:
             temperature=temperature,
             top_p=top_p,
         )
-        
+
+        logger.debug("Generated output length: %d", len(output))
+
         if self.enable_thinking:
             thinking, table = self._parse_thinking_output(output)
             if thinking:
                 logger.info("Thinking process:\n%s", thinking)
+            logger.debug("Final table length: %d", len(table))
             return table, entities
         else:
             return output, entities
-    
+
     def run_with_thinking(
         self,
         text: str,
@@ -359,3 +404,16 @@ class Text2Table:
         )
         thinking, table = self._parse_thinking_output(output)
         return thinking, table, entities
+
+    def close(self) -> None:
+        """Close underlying HTTP clients to release connections."""
+        if self._gliner_client:
+            try:
+                self._gliner_client.close()
+            except Exception:
+                pass
+        if self._vllm_client:
+            try:
+                self._vllm_client.close()
+            except Exception:
+                pass

@@ -13,3 +13,11 @@ def test_build_prompt_includes_labels_and_entities():
     assert "R13" in prompt
     assert "36 mg/kg" in prompt
     assert "Example text body." in prompt
+
+
+def test_build_prompt_without_gliner_mentions_inference():
+    extractor = Text2Table(labels=["Name", "Age"], use_gliner=False)
+    prompt = extractor.build_prompt("Some source text", entities=[])
+
+    assert "Entity extraction disabled" in prompt
+    assert "Some source text" in prompt
