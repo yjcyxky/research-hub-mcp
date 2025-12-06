@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 text2table
 ----------
@@ -9,6 +7,7 @@ optional entity recognition (GLiNER service) and table-focused generation
 through a vLLM OpenAI-compatible endpoint.
 """
 
+from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
@@ -16,13 +15,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from text2table.client import GLiNERClient, RetryPolicy, VLLMClient
+from text2table.prompts import (
+    SYSTEM_MESSAGE_DEFAULT,
+    SYSTEM_MESSAGE_WITH_THINKING,
+    DEFAULT_USER_INSTRUCTION,
+    build_entity_extraction_prompt,
+    format_entities_as_list,
+    format_entities_with_relations,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from gliner import GLiNER
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_USER_PROMPT = "Based on the above information, output a Markdown table with the labels as headers."
 
 
 def _normalize_labels(labels: Sequence[str]) -> List[str]:
@@ -168,28 +173,12 @@ class Text2Table:
         return entities
 
     def _format_entities(self, entities: List[Dict[str, object]]) -> str:
-        if not self.use_gliner:
-            return "- Entity extraction disabled; infer entities directly from the source text."
-        if not entities:
-            return "- No entities were found with the current threshold."
-
-        grouped: Dict[str, List[str]] = {label: [] for label in self.labels}
-        for entity in entities:
-            label = str(entity.get("label", "")).strip()
-            text = str(entity.get("text", "")).strip()
-            if not label or not text:
-                continue
-            if label not in grouped:
-                grouped[label] = []
-            if text not in grouped[label]:
-                grouped[label].append(text)
-
-        lines: List[str] = []
-        for label in self.labels:
-            values = grouped.get(label, [])
-            value_str = "; ".join(values) if values else "N/A"
-            lines.append(f"- {label}: {value_str}")
-        return "\n".join(lines)
+        """Format entities for the prompt using the prompts module."""
+        return format_entities_with_relations(
+            entities=entities,
+            labels=list(self.labels),
+            use_gliner=self.use_gliner,
+        )
 
     def build_prompt(
         self,
@@ -197,59 +186,17 @@ class Text2Table:
         entities: List[Dict[str, object]],
         user_prompt: Optional[str] = None,
     ) -> str:
+        """Build the prompt using the centralized prompts module."""
         entity_block = self._format_entities(entities)
         header = ", ".join(self.labels)
-        instruction = user_prompt.strip() if user_prompt else DEFAULT_USER_PROMPT
 
-        if self.enable_thinking:
-            prompt = (
-                "You are a structured information extraction assistant. "
-                "Use the extracted entities to fill a Markdown table.\n"
-
-                f"Table headers (keep order): {header}\n"
-
-                "Rules: one entity per row; if a field has multiple values, choose the single "
-                "best value for the cell and put discarded/extra values into a Notes column; "
-                "fill missing fields with N/A; append a Notes column after the provided headers.\n"
-
-                f"User instruction (style/formatting hints): {instruction}\n\n"
-
-                "Extracted entities or instructions:\n"
-                f"{entity_block}\n\n"
-
-                "Source text:\n"
-                f"{text.strip()}\n\n"
-
-                "IMPORTANT: Before outputting the final table, you must first think through "
-                "the problem step by step. Use <think>...</think> tags to wrap your thinking process. "
-                "After your thinking, output the final Markdown table.\n"
-                "Format:\n"
-                "<think>\n"
-                "Your reasoning process here...\n"
-                "</think>\n"
-                "Then output the final Markdown table."
-            )
-        else:
-            prompt = (
-                "You are a structured information extraction assistant. "
-                "Use the extracted entities to fill a Markdown table.\n"
-
-                f"Table headers (keep order): {header}\n"
-
-                "Rules: one entity per row; if a field has multiple values, choose the single "
-                "best value for the cell and put discarded/extra values into a Notes column; "
-                "fill missing fields with N/A; append a Notes column after the provided headers; "
-                "output only the final Markdown table.\n"
-
-                f"User instruction (style/formatting hints): {instruction}\n\n"
-
-                "Extracted entities or instructions:\n"
-                f"{entity_block}\n\n"
-
-                "Source text:\n"
-                f"{text.strip()}"
-            )
-        return prompt
+        return build_entity_extraction_prompt(
+            text=text,
+            entity_block=entity_block,
+            headers=header,
+            user_instruction=user_prompt,
+            enable_thinking=self.enable_thinking,
+        )
 
     def generate_table(
         self,
@@ -261,12 +208,7 @@ class Text2Table:
         reasoning_tokens: Optional[int] = None
 
         if self.enable_thinking:
-            system_content = (
-                "You convert extracted entities into concise Markdown tables. "
-                "Use the provided headers in order, append a Notes column for extra values, "
-                "one entity per row. Before outputting the final table, think through the "
-                "problem step by step using <think>...</think> tags, then output the final table."
-            )
+            system_content = SYSTEM_MESSAGE_WITH_THINKING
             # Increase max_new_tokens to accommodate thinking content
             effective_max_tokens = max(max_new_tokens, 1024)
             reasoning_tokens = (
@@ -275,11 +217,7 @@ class Text2Table:
                 else max(effective_max_tokens * 2, 1024)
             )
         else:
-            system_content = (
-                "You convert extracted entities into concise Markdown tables. "
-                "Use the provided headers in order, append a Notes column for extra values, "
-                "one entity per row, and return only the final table."
-            )
+            system_content = SYSTEM_MESSAGE_DEFAULT
             effective_max_tokens = max_new_tokens
 
         messages = [

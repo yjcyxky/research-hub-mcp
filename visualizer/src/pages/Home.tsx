@@ -3,7 +3,7 @@ import { visualizers } from '../components/Header';
 
 export default function Home() {
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-6 mx-auto">
       <div className="text-center mb-12">
         <h1 className="text-4xl font-bold text-gray-800 mb-4">
           Research Visualizer
@@ -74,7 +74,7 @@ export default function Home() {
             </h2>
           </div>
           <p className="text-gray-400">
-            Additional visualizers for classification, relation extraction, and
+            Additional visualizers for classification, QA, and
             more will be added in future updates.
           </p>
         </div>

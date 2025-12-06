@@ -10,6 +10,14 @@ Service mode only:
 - Optional GLiNER HTTP service for entity extraction (set via `TEXT2TABLE_GLINER_URL` or `--gliner-url`)
 - `openai`, `httpx`, `click`
 
+## Starting the vLLM Server
+
+```bash
+python text2table/server.py --trust-remote-code --model Qwen/Qwen3-30B-A3B-Instruct-2507-FP8 --max-model-len 16384
+```
+
+> **Note**: 启用 FP8 量化 + 限制 `max-model-len` 可使 30B 模型通过 vLLM 在 48GB 显存的 NVIDIA GPU 上运行。
+
 Expected GLiNER service contract (if you choose service mode):
 - `POST /extract` with JSON payload `{"text": "...", "labels": [...], "threshold": 0.5, "model": "optional-name"}`
 - Response either as a list of entity dicts or an object containing an `entities` array.
@@ -44,7 +52,7 @@ Options:
 - `--server-url` / `TEXT2TABLE_VLLM_URL`: vLLM OpenAI-compatible endpoint (required)
 - `--gliner-url` / `TEXT2TABLE_GLINER_URL`: GLiNER service URL (if omitted and not disabled, uses local GLiNER)
 - `--disable-gliner`: skip entity extraction and let the LLM infer directly from text
-- `--gliner-model`, `--qwen-model` (optional): model hints forwarded to the services; if `--qwen-model` is omitted, the server's default model is used
+- `--gliner-model`, `--qwen-model` (optional): model hints forwarded to the services; if `--qwen-model` is omitted, the server's default model is used.
 - `--gliner-cache-dir`, `--gliner-device`: control local GLiNER cache/device when not using the service
 - `--threshold`: GLiNER score threshold (default `0.5`)
 - `--request-timeout`, `--pool-size`, `--max-retries` (retries after the first call), `--backoff-factor`, `--max-backoff`: HTTP client controls for production use

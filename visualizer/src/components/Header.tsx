@@ -5,18 +5,17 @@ const visualizers: VisualizerConfig[] = [
   {
     id: 'ner',
     name: 'NER Evaluation',
-    description: 'Visualize Named Entity Recognition results',
+    description: 'Visualize Named Entity Recognition results with span-level comparison',
     fileTypes: ['.jsonl'],
     path: '/ner',
   },
-  // Future visualizers can be added here
-  // {
-  //   id: 'classification',
-  //   name: 'Classification',
-  //   description: 'Visualize text classification results',
-  //   fileTypes: ['.jsonl', '.json'],
-  //   path: '/classification',
-  // },
+  {
+    id: 're',
+    name: 'Table/RE Evaluation',
+    description: 'Visualize Table Extraction and Relation Extraction results',
+    fileTypes: ['.jsonl'],
+    path: '/re',
+  },
 ];
 
 export default function Header() {
@@ -24,7 +23,7 @@ export default function Header() {
 
   return (
     <header className="bg-slate-800 text-white shadow-lg">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           <div className="flex items-center">
             <Link to="/" className="flex items-center space-x-2">
