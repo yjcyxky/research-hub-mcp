@@ -44,6 +44,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _append_jsonl(output_path: Path, rows: List[object]) -> None:
+    """Append rows (dict or objects with to_dict) to a JSONL file."""
+    if not rows:
+        return
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("a", encoding="utf-8") as f:
+        for row in rows:
+            payload = row.to_dict() if hasattr(row, "to_dict") else row
+            f.write(json.dumps(payload, ensure_ascii=False))
+            f.write("\n")
+
+
+def _relation_to_dict(rel: Relation) -> dict:
+    return {"type": rel.relation_type, "entities": rel.entities}
+
+
+def _build_dump_record(result: "BatchResult", sample: EvalSample, labels: List[str]) -> dict:
+    """Combine prediction result with gold info for dumping."""
+    pred_table = ExtractedTable.from_tsv(result.table, expected_headers=labels)
+    pred_relations = table_to_relations(pred_table, "extracted")
+    return {
+        "index": result.index,
+        "id": result.id,
+        "text": result.text,
+        "gold_table": sample.gold_table.to_dict(),
+        "pred_table": pred_table.to_dict(),
+        "gold_relations": [_relation_to_dict(r) for r in sample.gold_relations],
+        "pred_relations": [_relation_to_dict(r) for r in pred_relations],
+        "entities": result.entities,
+        "thinking": result.thinking,
+        "metadata": sample.metadata,
+        "status": result.status,
+        "error": result.error,
+    }
+
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -573,7 +609,11 @@ def run_text2table_predictions(
         if dump_jsonl:
             buffer.append(res)
             if len(buffer) >= flush_every:
-                _append_jsonl(dump_jsonl, buffer)
+                # Enrich with gold/pred relations before writing
+                enriched = [
+                    _build_dump_record(r, samples[r.index], labels) for r in buffer
+                ]
+                _append_jsonl(dump_jsonl, enriched)
                 buffer.clear()
 
     async def _run_all() -> List[BatchResult]:
@@ -593,7 +633,10 @@ def run_text2table_predictions(
             if progress:
                 progress.close()
             if dump_jsonl and buffer:
-                _append_jsonl(dump_jsonl, buffer)
+                enriched = [
+                    _build_dump_record(r, samples[r.index], labels) for r in buffer
+                ]
+                _append_jsonl(dump_jsonl, enriched)
 
     results = asyncio.run(_run_all())
 
