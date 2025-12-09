@@ -51,7 +51,18 @@ async def run() -> int:
             output_dir=output_dir,
             filename=args.filename,
             wait_time=args.wait_time,
-            plugin_options={"wiley": {"headless": args.headless}},
+            plugin_options={
+                "wiley": {"headless": args.headless},
+                "oxford": {"headless": args.headless},
+                "nature": {"headless": args.headless},
+                "springer": {"headless": args.headless},
+                "biorxiv": {"headless": args.headless},
+                "mdpi": {"headless": args.headless},
+                "frontiers": {"headless": args.headless},
+                "pnas": {"headless": args.headless},
+                "plos": {"headless": args.headless},
+                "hindawi": {"headless": args.headless},
+            },
         )
         payload = {
             "success": result.success,

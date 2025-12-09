@@ -100,6 +100,7 @@ atty = "0.2"
 
 # Python embedding
 pyo3 = { version = "0.23", features = ["auto-initialize"] }
+include_dir = "0.7"
 
 [dev-dependencies]
 # Testing
