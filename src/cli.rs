@@ -95,6 +95,39 @@ enum Commands {
         /// Path to a PDF file
         input: String,
     },
+    /// Convert PDF to structured JSON and Markdown using GROBID
+    Pdf2text {
+        /// Path to a single PDF file
+        #[arg(long)]
+        pdf_file: Option<PathBuf>,
+        /// Directory containing PDF files
+        #[arg(long)]
+        pdf_dir: Option<PathBuf>,
+        /// Output directory for extracted content (required)
+        #[arg(long)]
+        output_dir: PathBuf,
+        /// GROBID server URL
+        #[arg(long)]
+        grobid_url: Option<String>,
+        /// Don't auto-start a local GROBID server
+        #[arg(long)]
+        no_auto_start: bool,
+        /// Don't extract figures
+        #[arg(long)]
+        no_figures: bool,
+        /// Don't extract tables
+        #[arg(long)]
+        no_tables: bool,
+        /// Copy source PDF into output bundle
+        #[arg(long)]
+        copy_pdf: bool,
+        /// Overwrite existing outputs
+        #[arg(long)]
+        overwrite: bool,
+        /// Don't generate Markdown
+        #[arg(long)]
+        no_markdown: bool,
+    },
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, ValueEnum)]
@@ -247,6 +280,51 @@ async fn main() -> anyhow::Result<()> {
             };
             let result = extractor.extract_metadata(meta_input).await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Commands::Pdf2text {
+            pdf_file,
+            pdf_dir,
+            output_dir,
+            grobid_url,
+            no_auto_start,
+            no_figures,
+            no_tables,
+            copy_pdf,
+            overwrite,
+            no_markdown,
+        } => {
+            use rust_research_mcp::tools::pdf2text::{Pdf2TextInput, Pdf2TextTool};
+            
+            let pdf2text_tool = Pdf2TextTool::new(config.clone())?;
+            let input = Pdf2TextInput {
+                pdf_file: pdf_file.map(|p| p.to_string_lossy().to_string()),
+                pdf_dir: pdf_dir.map(|p| p.to_string_lossy().to_string()),
+                output_dir: output_dir.to_string_lossy().to_string(),
+                grobid_url,
+                no_auto_start,
+                no_figures,
+                no_tables,
+                copy_pdf,
+                overwrite,
+                no_markdown,
+            };
+
+            let result = pdf2text_tool.convert(input).await?;
+            if result.success {
+                println!("Conversion succeeded!");
+                println!("Files processed: {}", result.files_processed);
+                if let Some(json) = result.json_path {
+                    println!("JSON output: {}", json);
+                }
+                if let Some(md) = result.markdown_path {
+                    println!("Markdown output: {}", md);
+                }
+            } else {
+                println!("Conversion failed!");
+                if let Some(err) = result.error {
+                    println!("Error: {}", err);
+                }
+            }
         }
     }
 

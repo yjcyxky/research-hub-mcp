@@ -55,6 +55,7 @@ pub mod server;
 pub mod service;
 pub mod services;
 pub mod tools;
+pub mod python_embed;
 
 // pub use adapters::{
 //     MetaSearchAdapter, MultiProviderAdapter, PaperDownloadAdapter, PdfMetadataAdapter,
@@ -74,5 +75,6 @@ pub use resilience::{CircuitBreaker, RetryConfig, RetryPolicy, TimeoutConfig, Ti
 pub use server::Server;
 pub use service::{DaemonConfig, DaemonService, HealthCheck, PidFile, SignalHandler};
 pub use tools::{
-    BibliographyTool, CategorizeTool, CodeSearchTool, DownloadTool, MetadataExtractor, SearchTool,
+    BibliographyTool, CategorizeTool, CodeSearchTool, DownloadTool, MetadataExtractor,
+    Pdf2TextTool, SearchTool,
 };

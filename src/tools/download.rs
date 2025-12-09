@@ -11,12 +11,12 @@ use sha2::{Digest, Sha256};
 // use std::any::Any;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+// use std::process::Stdio; // No longer needed after PyO3 migration
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
+// use tokio::process::Command; // No longer needed after PyO3 migration
 use tokio::sync::{mpsc, RwLock};
 // use tokio_util::io::ReaderStream; // Not needed currently
 use tracing::{debug, error, info, instrument, warn};
@@ -361,37 +361,40 @@ impl DownloadTool {
     }
 
     /// Download a paper by DOI or URL
+    ///
+    /// Priority: Plugin download first, then fall back to primary methods
     // #[tool] // Will be enabled when rmcp integration is complete
     #[instrument(skip(self), fields(doi = ?input.doi, url = ?input.url))]
     pub async fn download_paper(&self, input: DownloadInput) -> Result<DownloadResult> {
         let download_id = uuid::Uuid::new_v4().to_string();
         debug!("🆔 Generated download ID: {}", download_id);
 
-        let primary_result = self.download_paper_impl(&download_id, &input).await;
-
-        let mut result = match primary_result {
-            Ok(res) => res,
-            Err(primary_err) => {
-                if input.doi.is_some() && primary_err.is_retryable() {
+        // Priority 1: Try plugin download first (if DOI is available)
+        let mut result = if input.doi.is_some() {
+            debug!("🔌 Attempting plugin download first (priority method)");
+            match self.attempt_plugin_fallback(&download_id, &input).await {
+                Ok(Some(plugin_result)) => {
+                    info!("✅ Plugin download succeeded");
+                    plugin_result
+                }
+                Ok(None) => {
+                    debug!("🔌 Plugin download returned None, falling back to primary method");
+                    self.download_with_primary_fallback(&download_id, &input)
+                        .await?
+                }
+                Err(plugin_err) => {
                     warn!(
-                        error = %primary_err,
-                        "Primary download failed, attempting plugin fallback"
+                        error = %plugin_err,
+                        "Plugin download failed, falling back to primary method"
                     );
-                    match self.attempt_plugin_fallback(&download_id, &input).await {
-                        Ok(Some(fallback)) => fallback,
-                        Ok(None) => return Err(primary_err),
-                        Err(fallback_err) => {
-                            warn!(
-                                error = %fallback_err,
-                                "Plugin fallback failed, returning primary error"
-                            );
-                            return Err(primary_err);
-                        }
-                    }
-                } else {
-                    return Err(primary_err);
+                    self.download_with_primary_fallback(&download_id, &input)
+                        .await?
                 }
             }
+        } else {
+            // No DOI available, use primary method directly
+            debug!("📥 No DOI provided, using primary download method");
+            self.download_paper_impl(&download_id, &input).await?
         };
 
         if let Err(e) = self.apply_post_processing(&input, &mut result).await {
@@ -399,6 +402,15 @@ impl DownloadTool {
         }
 
         Ok(result)
+    }
+
+    /// Fallback to primary download method
+    async fn download_with_primary_fallback(
+        &self,
+        download_id: &str,
+        input: &DownloadInput,
+    ) -> Result<DownloadResult> {
+        self.download_paper_impl(download_id, input).await
     }
 
     async fn download_paper_impl(
@@ -610,19 +622,10 @@ impl DownloadTool {
             });
         }
 
-        let Some(python_bin) = Self::find_python_binary().await else {
-            return Err(crate::Error::Service(
-                "Python runtime not found for pdf2text conversion".to_string(),
-            ));
-        };
-
-        let cli_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("pdf2text")
-            .join("cli.py");
-        if !cli_path.exists() {
+        // Check if PyO3/Python is available
+        if let Err(e) = crate::python_embed::check_python_available() {
             return Err(crate::Error::Service(format!(
-                "pdf2text CLI not found at {:?}",
-                cli_path
+                "Python runtime not available for pdf2text conversion: {e}"
             )));
         }
 
@@ -631,44 +634,53 @@ impl DownloadTool {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.get_default_download_directory());
 
-        let mut command = Command::new(python_bin);
-        command
-            .arg(cli_path)
-            .arg("pdf")
-            .arg("--pdf-file")
-            .arg(pdf_path)
-            .arg("--output-dir")
-            .arg(&output_dir)
-            .arg("--grobid-url")
-            .arg("https://kermitt2-grobid.hf.space")
-            .arg("--no-auto-start")
-            .arg("--no-figures")
-            .arg("--no-tables")
-            .arg("--overwrite")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .current_dir(env!("CARGO_MANIFEST_DIR"));
+        let pdf_path_clone = pdf_path.to_path_buf();
+        let output_dir_clone = output_dir.clone();
 
-        let output = command.output().await?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(crate::Error::Service(format!(
-                "pdf2text exited with {}: {}",
-                output.status, stderr
-            )));
+        // Run PyO3-based pdf2text in a blocking task
+        let pyo3_result = tokio::task::spawn_blocking(move || {
+            crate::python_embed::run_pdf2text(
+                &pdf_path_clone,
+                &output_dir_clone,
+                Some("https://kermitt2-grobid.hf.space"), // grobid_url
+                true,                                     // no_auto_start
+                true,                                     // no_figures
+                true,                                     // no_tables
+                false,                                    // copy_pdf
+                true,                                     // overwrite
+                false,                                    // no_markdown
+            )
+        })
+        .await
+        .map_err(|e| crate::Error::Service(format!("pdf2text task panicked: {e}")))?;
+
+        match pyo3_result {
+            Ok(result) if result.success => {
+                if let Some(md_path) = result.markdown_path {
+                    let path = PathBuf::from(md_path);
+                    if path.exists() {
+                        return Ok(Some(path));
+                    }
+                }
+                // Try to derive markdown path from JSON path
+                if let Some(json_path) = result.json_path {
+                    let md_path = PathBuf::from(json_path.replace(".json", ".md"));
+                    if md_path.exists() {
+                        return Ok(Some(md_path));
+                    }
+                }
+                Ok(None)
+            }
+            Ok(result) => {
+                if let Some(err) = result.error {
+                    warn!(error = %err, "PyO3 pdf2text reported failure");
+                }
+                Ok(None)
+            }
+            Err(e) => Err(crate::Error::Service(format!(
+                "pdf2text execution failed: {e}"
+            ))),
         }
-
-        let stem = pdf_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("paper");
-        let markdown_path = output_dir.join(stem).join(format!("{stem}.md"));
-
-        if markdown_path.exists() {
-            return Ok(Some(markdown_path));
-        }
-
-        Ok(None)
     }
 
     async fn attempt_plugin_fallback(
@@ -681,16 +693,9 @@ impl DownloadTool {
             None => return Ok(None),
         };
 
-        let Some(python_bin) = Self::find_python_binary().await else {
-            warn!("Python runtime not available, skipping plugin fallback");
-            return Ok(None);
-        };
-
-        let runner_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("plugins")
-            .join("plugin_runner.py");
-        if !runner_path.exists() {
-            warn!("Plugin runner script not found at {:?}", runner_path);
+        // Check if PyO3/Python is available
+        if let Err(e) = crate::python_embed::check_python_available() {
+            warn!(error = %e, "Python runtime not available via PyO3, skipping plugin fallback");
             return Ok(None);
         }
 
@@ -712,102 +717,84 @@ impl DownloadTool {
         let filename = target_path
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("download.pdf");
+            .map(String::from);
 
-        let mut command = Command::new(python_bin);
-        command
-            .arg(runner_path)
-            .arg("--doi")
-            .arg(doi)
-            .arg("--output-dir")
-            .arg(&output_dir)
-            .arg("--filename")
-            .arg(filename)
-            .arg("--headless")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .current_dir(env!("CARGO_MANIFEST_DIR"));
+        // Run the PyO3-based plugin download in a blocking task
+        // since PyO3 operations are synchronous
+        let doi_clone = doi.clone();
+        let output_dir_clone = output_dir.clone();
+        let filename_clone = filename.clone();
 
-        let output = command.output().await?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!(%stderr, "Plugin runner exited with non-zero status");
-            return Ok(None);
-        }
+        let pyo3_result = tokio::task::spawn_blocking(move || {
+            crate::python_embed::run_plugin_download(
+                &doi_clone,
+                &output_dir_clone,
+                filename_clone.as_deref(),
+                5.0,  // wait_time
+                true, // headless
+            )
+        })
+        .await
+        .map_err(|e| crate::Error::Service(format!("Plugin task panicked: {e}")))?;
 
-        let response: PluginRunnerOutput = match serde_json::from_slice(&output.stdout) {
-            Ok(parsed) => parsed,
+        match pyo3_result {
+            Ok(result) if result.success => {
+                let file_path = result.file_path.map(PathBuf::from).unwrap_or(target_path);
+
+                let file_size = if result.file_size > 0 {
+                    Some(result.file_size)
+                } else {
+                    tokio::fs::metadata(&file_path).await.ok().map(|m| m.len())
+                };
+
+                let duration = start_time.elapsed().unwrap_or_default();
+                let sha256_hash = if input.verify_integrity {
+                    Some(self.calculate_file_hash(&file_path).await?)
+                } else {
+                    None
+                };
+
+                info!(
+                    "Plugin fallback succeeded for DOI {} using {}",
+                    doi,
+                    result
+                        .publisher
+                        .clone()
+                        .unwrap_or_else(|| "unknown plugin".to_string())
+                );
+
+                Ok(Some(DownloadResult {
+                    download_id: download_id.to_string(),
+                    status: DownloadStatus::Completed,
+                    file_path: Some(file_path),
+                    markdown_path: None,
+                    file_size,
+                    sha256_hash,
+                    duration_seconds: duration.as_secs_f64(),
+                    average_speed: file_size.unwrap_or(0) / duration.as_secs().max(1),
+                    metadata: None,
+                    used_plugin: result.publisher,
+                    post_process_error: None,
+                    error: None,
+                }))
+            }
+            Ok(result) => {
+                if let Some(err) = result.error {
+                    warn!(error = %err, "PyO3 plugin runner reported failure");
+                }
+                Ok(None)
+            }
             Err(e) => {
-                warn!(error = %e, "Failed to parse plugin runner response");
-                return Ok(None);
+                warn!(error = %e, "PyO3 plugin execution failed");
+                Ok(None)
             }
-        };
-
-        if !response.success {
-            if let Some(err) = response.error {
-                warn!(error = %err, "Plugin runner reported failure");
-            }
-            return Ok(None);
         }
-
-        let Some(path_str) = response.file_path else {
-            warn!("Plugin runner succeeded but no file path returned");
-            return Ok(None);
-        };
-
-        let file_path = PathBuf::from(path_str);
-        let file_size = match response.file_size {
-            Some(size) => Some(size),
-            None => tokio::fs::metadata(&file_path).await.ok().map(|m| m.len()),
-        };
-
-        let duration = start_time.elapsed().unwrap_or_default();
-        let sha256_hash = if input.verify_integrity {
-            Some(self.calculate_file_hash(&file_path).await?)
-        } else {
-            None
-        };
-
-        info!(
-            "Plugin fallback succeeded for DOI {} using {}",
-            doi,
-            response
-                .publisher
-                .clone()
-                .unwrap_or_else(|| "unknown plugin".to_string())
-        );
-
-        Ok(Some(DownloadResult {
-            download_id: download_id.to_string(),
-            status: DownloadStatus::Completed,
-            file_path: Some(file_path),
-            markdown_path: None,
-            file_size,
-            sha256_hash,
-            duration_seconds: duration.as_secs_f64(),
-            average_speed: file_size.unwrap_or(0) / duration.as_secs().max(1),
-            metadata: None,
-            used_plugin: response.publisher,
-            post_process_error: None,
-            error: None,
-        }))
     }
 
-    async fn find_python_binary() -> Option<String> {
-        for candidate in ["python3", "python"] {
-            if let Ok(output) = Command::new(candidate)
-                .arg("--version")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
-                .await
-            {
-                if output.status.success() {
-                    return Some(candidate.to_string());
-                }
-            }
-        }
-        None
+    /// Check if Python is available via PyO3
+    #[allow(dead_code)]
+    fn check_python_available() -> bool {
+        crate::python_embed::check_python_available().is_ok()
     }
 
     /// Download multiple papers concurrently
@@ -1066,15 +1053,69 @@ impl DownloadTool {
         }
     }
 
+    fn sanitize_filename(doi: &str) -> Option<String> {
+        // Windows/macOS/Linux 不允许的字符集合
+        // 包含 `/:*?"<>|\` 和各种括号、空白、控制字符等
+        const INVALID_CHARS: &[char] = &[
+            '/', '\\', ':', '*', '?', '"', '<', '>', '|', '(', ')', '[', ']', '{', '}', ' ', '\t',
+            '\r', '\n',
+        ];
+
+        let mut out = String::with_capacity(doi.len());
+        let mut last_was_sep = false;
+
+        for c in doi.chars() {
+            let is_invalid = INVALID_CHARS.contains(&c) || c.is_control() || c.is_whitespace();
+
+            if is_invalid {
+                if !last_was_sep {
+                    out.push('_');
+                    last_was_sep = true;
+                }
+            } else {
+                out.push(c);
+                last_was_sep = false;
+            }
+        }
+
+        // 去掉首尾 `_`
+        let out = out.trim_matches('_').to_string();
+
+        // 避免空文件名
+        if out.is_empty() {
+            return None;
+        }
+
+        Some(out)
+    }
+
     /// Convert a batch request to an individual download input
     fn convert_batch_request_to_download_input(
         request: &BatchDownloadRequest,
         shared_settings: &BatchDownloadSettings,
     ) -> Result<DownloadInput> {
+        let doi = request.doi.clone();
+        let filename = request.filename.clone();
+
+        let filename = if let Some(doi) = doi {
+            match Self::sanitize_filename(&doi) {
+                Some(doi_filename) => Some(doi_filename + ".pdf"),
+                None => filename,
+            }
+        } else {
+            filename
+        };
+
+        info!(
+            "Using filename: {:?} for DOI: {:?}",
+            filename,
+            request.doi.clone()
+        );
+
         Ok(DownloadInput {
             doi: request.doi.clone(),
             url: request.url.clone(),
-            filename: request.filename.clone(),
+            filename,
             directory: shared_settings.directory.clone(),
             category: request
                 .category
@@ -1544,11 +1585,17 @@ impl DownloadTool {
             info!("Using fallback directory: {:?}", base_dir);
         }
 
-        // Determine filename
-        let filename = input.filename.as_ref().map_or_else(
-            || Self::generate_filename(metadata, download_url),
-            Clone::clone,
-        );
+        let filename = if let Some(doi) = &input.doi {
+            match Self::sanitize_filename(&doi) {
+                Some(doi_filename) => doi_filename + ".pdf",
+                None => Self::generate_filename(metadata, download_url),
+            }
+        } else {
+            input.filename.as_ref().map_or_else(
+                || Self::generate_filename(metadata, download_url),
+                Clone::clone,
+            )
+        };
 
         Ok(base_dir.join(filename))
     }

@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from plugins.utils import download_with_detected_plugin, normalize_doi
+from plugins.utils import download_with_detected_plugin, normalize_doi  # noqa: E402
 
 
 async def run() -> int:

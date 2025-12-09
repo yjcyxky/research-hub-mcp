@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-Wiley Online Library PDF Downloader Plugin
+PNAS PDF Downloader Plugin
 
-Downloads PDF files from onlinelibrary.wiley.com/doi/pdfdirect URLs
-using Playwright to handle authentication and redirects.
+Downloads PDF files from pnas.org URLs.
+Supports both direct HTTP download (for open access) and browser-based download.
 
 Usage:
-    from plugins.wiley_pdf_downloader import WileyPDFDownloader
+    from plugins.pnas_pdf_downloader import PNASPDFDownloader
 
-    async with WileyPDFDownloader() as downloader:
+    async with PNASPDFDownloader() as downloader:
         result = await downloader.download(
-            url="https://onlinelibrary.wiley.com/doi/pdfdirect/10.1002/jcsm.70098",
+            url="https://www.pnas.org/content/pnas/12345678.full.pdf",
             output_dir="./downloads"
         )
 
 CLI Usage:
-    python -m plugins.wiley_pdf_downloader <url> [--output-dir ./downloads] [--headless]
+    python -m plugins.pnas_pdf_downloader <url> [--output-dir ./downloads] [--headless]
 """
 
 import asyncio
@@ -25,9 +25,13 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Optional, Union
-from urllib.parse import unquote
+from urllib.request import Request, urlopen
 
-from playwright.async_api import Browser, async_playwright # type: ignore
+try:
+    from playwright.async_api import Browser, async_playwright  # type: ignore
+except ImportError:
+    Browser = None  # type: ignore
+    async_playwright = None  # type: ignore
 
 # Allow running as a script without installing the package
 PLUGIN_ROOT = Path(__file__).resolve().parent
@@ -39,51 +43,22 @@ from plugins.common import BasePlugin, DownloadResult  # noqa: E402
 from plugins.utils import normalize_doi  # noqa: E402
 
 
-class WileyPDFDownloader(BasePlugin):
+class PNASPDFDownloader(BasePlugin):
     """
-    Downloads PDF files from Wiley Online Library.
+    Downloads PDF files from PNAS (Proceedings of the National Academy of Sciences).
 
-    Handles the authentication flow and extracts the original PDF
-    using Chrome DevTools Protocol (CDP) Fetch interception.
+    Handles both direct HTTP downloads (for open access articles) and
+    browser-based downloads (for subscription-protected content).
     """
 
-    publisher = "wiley"
+    publisher = "pnas"
 
     SUPPORTED_URL_PATTERN = re.compile(
-        r"^https?://onlinelibrary\.wiley\.com/doi/pdfdirect/(.+)$"
+        r"^https?://(www\.)?pnas\.org/content/pnas/([^/?#]+)\.full\.pdf$"
     )
 
-    # Wiley Online Library DOI prefixes
-    SUPPORTED_PREFIXES = (
-        "10.1002",  # John Wiley & Sons
-        "10.1111",
-        "10.1113",
-        "10.1046",
-        "10.1034",
-        # Additional Wiley/Wiley-Blackwell prefixes
-        "10.3322",  # Wiley (American Cancer Society)
-        "10.2966",
-        "10.1892",
-        "10.1359",
-        "10.2755",
-        "10.1348",
-        "10.1506",
-        "10.3162",
-        "10.2746",
-        "10.1516",
-        "10.1301",
-        "10.3405",
-        "10.1196",
-        "10.3170",
-        "10.3401",
-        "10.1581",
-        "10.1576",
-        "10.1256",
-        "10.1526",
-        "10.1897",
-        "10.5054",
-        "10.4004",
-    )
+    # PNAS DOI prefixes
+    SUPPORTED_PREFIXES = ("10.1073",)
 
     DEFAULT_USER_AGENT = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -113,6 +88,10 @@ class WileyPDFDownloader(BasePlugin):
 
     async def __aenter__(self):
         """Async context manager entry."""
+        if async_playwright is None:
+            raise ImportError(
+                "playwright is not installed. Install it with: pip install playwright"
+            )
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(headless=self.headless)
         return self
@@ -124,29 +103,10 @@ class WileyPDFDownloader(BasePlugin):
         if self._playwright:
             await self._playwright.stop()
 
-    @classmethod
-    def extract_doi(cls, url: str) -> Optional[str]:
-        """
-        Extract DOI from a Wiley pdfdirect URL.
-
-        Args:
-            url: The Wiley PDF URL
-
-        Returns:
-            The DOI string or None if not found
-        """
-        match = cls.SUPPORTED_URL_PATTERN.match(url)
-        if match:
-            return unquote(match.group(1))
-        return None
-
     @staticmethod
     def normalize_doi(doi: str) -> str:
         """Normalize common DOI formats to the canonical form."""
-        doi = doi.strip()
-        doi = re.sub(r"^https?://(dx\.)?doi\.org/", "", doi, flags=re.IGNORECASE)
-        doi = doi.removeprefix("doi:")
-        return doi.strip()
+        return normalize_doi(doi)
 
     def is_supported_doi(self, doi: str) -> bool:
         """
@@ -159,20 +119,22 @@ class WileyPDFDownloader(BasePlugin):
             True if this plugin can handle this DOI
         """
         normalized_doi = self.normalize_doi(doi)
-        prefix = normalized_doi.split("/")[0] if "/" in normalized_doi else normalized_doi
+        prefix = (
+            normalized_doi.split("/")[0] if "/" in normalized_doi else normalized_doi
+        )
         return prefix in self.SUPPORTED_PREFIXES
 
     @classmethod
     def is_supported_url(cls, url: str) -> bool:
-        """Check if the URL is a supported Wiley pdfdirect URL."""
+        """Check if the URL is a supported PNAS PDF URL."""
         return cls.SUPPORTED_URL_PATTERN.match(url) is not None
 
     def build_download_url(self, doi: str) -> Optional[str]:
         """
-        Build a Wiley pdfdirect URL from DOI.
+        Build a PNAS PDF URL from DOI.
 
         Args:
-            doi: Normalized DOI string
+            doi: Normalized DOI string (e.g., "10.1073/pnas.1234567890")
 
         Returns:
             PDF URL or None if DOI format is not supported
@@ -181,35 +143,57 @@ class WileyPDFDownloader(BasePlugin):
             return None
 
         normalized_doi = self.normalize_doi(doi)
-        return f"https://onlinelibrary.wiley.com/doi/pdfdirect/{normalized_doi}"
+        parts = normalized_doi.split("/")
+        if len(parts) >= 2:
+            article_id = parts[1]
+            return f"https://www.pnas.org/content/pnas/{article_id}.full.pdf"
+        return None
 
     @staticmethod
-    def sanitize_filename(doi: str) -> str:
-        """Convert DOI to a safe filename."""
-        # Replace / with _ and remove other problematic characters
-        filename = doi.replace("/", "_")
+    def sanitize_filename(article_id: str) -> str:
+        """Convert article ID to a safe filename."""
+        filename = article_id.replace("/", "_")
         filename = re.sub(r'[<>:"|?*]', "", filename)
         return f"{filename}.pdf"
 
-    async def _download_with_cdp_fetch(
-        self,
-        url: str,
-        output_file: Path,
-        wait_time: float,
+    async def _download_direct_http(
+        self, url: str, output_file: Path
     ) -> Optional[bytes]:
         """
-        Download PDF using CDP Fetch interception.
-        Works in non-headless mode where PDF is displayed in browser.
+        Attempt direct HTTP download (for open access articles).
+
+        Args:
+            url: PDF URL
+            output_file: Target file path
+
+        Returns:
+            PDF content bytes or None if download failed
         """
+        try:
+            def _sync_download():
+                req = Request(url, headers={"User-Agent": self.user_agent})
+                with urlopen(req, timeout=30) as response:
+                    if response.status == 200:
+                        content = response.read()
+                        if len(content) > 4 and content[:4] == b"%PDF":
+                            return content
+                    return None
+
+            content = await asyncio.to_thread(_sync_download)
+            return content
+        except Exception:
+            return None
+
+    async def _download_with_cdp_fetch(
+        self, url: str, output_file: Path, wait_time: float
+    ) -> Optional[bytes]:
+        """Download PDF using CDP Fetch interception."""
         pdf_content = None
         context = await self._browser.new_context(user_agent=self.user_agent)
         page = await context.new_page()
 
         try:
-            # Set up CDP session for request interception
             client = await context.new_cdp_session(page)
-
-            # Enable Fetch domain to intercept responses
             await client.send(
                 "Fetch.enable",
                 {"patterns": [{"urlPattern": "*", "requestStage": "Response"}]},
@@ -220,7 +204,6 @@ class WileyPDFDownloader(BasePlugin):
                 request_id = params["requestId"]
 
                 try:
-                    # Get response body
                     body_result = await client.send(
                         "Fetch.getResponseBody", {"requestId": request_id}
                     )
@@ -236,14 +219,11 @@ class WileyPDFDownloader(BasePlugin):
                             else body_data
                         )
 
-                    # Check if it's a PDF (magic bytes)
                     if len(data) > 100 and data[:4] == b"%PDF":
                         pdf_content = data
-
                 except Exception:
                     pass
 
-                # Continue the request
                 try:
                     await client.send("Fetch.continueRequest", {"requestId": request_id})
                 except Exception:
@@ -254,10 +234,7 @@ class WileyPDFDownloader(BasePlugin):
                 lambda params: asyncio.create_task(handle_fetch(params)),
             )
 
-            # Navigate to the URL
             await page.goto(url, timeout=self.timeout)
-
-            # Wait for PDF to load
             await asyncio.sleep(wait_time)
 
         finally:
@@ -266,16 +243,9 @@ class WileyPDFDownloader(BasePlugin):
         return pdf_content
 
     async def _download_with_download_handler(
-        self,
-        url: str,
-        output_file: Path,
-        wait_time: float,
+        self, url: str, output_file: Path, wait_time: float
     ) -> Optional[bytes]:
-        """
-        Download PDF by handling browser download events.
-        Works in headless mode where PDF triggers a download.
-        """
-        # Create a temporary directory for downloads
+        """Download PDF by handling browser download events."""
         with tempfile.TemporaryDirectory() as temp_dir:
             context = await self._browser.new_context(
                 user_agent=self.user_agent,
@@ -290,7 +260,6 @@ class WileyPDFDownloader(BasePlugin):
                         try:
                             await page.goto(url, timeout=self.timeout, wait_until="commit")
                         except Exception as e:
-                            # "Download is starting" is expected when navigation triggers a download
                             if "Download is starting" not in str(e):
                                 raise
                     download = await download_info.value
@@ -306,7 +275,6 @@ class WileyPDFDownloader(BasePlugin):
                 try:
                     await download.save_as(temp_file)
                 except Exception:
-                    # If save_as fails (e.g., canceled), bail out
                     await context.close()
                     return None
 
@@ -327,90 +295,77 @@ class WileyPDFDownloader(BasePlugin):
         doi: Optional[str] = None,
     ) -> DownloadResult:
         """
-        Download a PDF from Wiley Online Library.
+        Download a PDF from PNAS.
 
         Args:
-            url: The Wiley pdfdirect URL
+            url: The PNAS PDF URL
             output_dir: Directory to save the PDF (default: current directory)
-            filename: Custom filename (optional, derived from DOI if not provided)
+            filename: Custom filename (optional, derived from article ID if not provided)
             wait_time: Time to wait for PDF to load in seconds (default: 5.0)
             doi: DOI string if already known (optional)
 
         Returns:
             DownloadResult with success status and file information
         """
-        # Validate URL
         if not self.is_supported_url(url):
             return DownloadResult(
                 success=False,
-                error="Unsupported URL format. Expected: https://onlinelibrary.wiley.com/doi/pdfdirect/...",
+                error="Unsupported URL format. Expected: https://www.pnas.org/content/pnas/.../full.pdf",
                 doi=doi,
                 publisher=self.publisher,
             )
 
-        doi = normalize_doi(doi or self.extract_doi(url) or "wiley_download")
+        normalized_doi = self.normalize_doi(doi or "pnas_download")
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Determine output filename
         if filename:
             if not filename.endswith(".pdf"):
                 filename += ".pdf"
             output_file = output_path / filename
         else:
-            output_file = output_path / self.sanitize_filename(doi)
+            match = self.SUPPORTED_URL_PATTERN.match(url)
+            article_id = match.group(2) if match else "pnas_download"
+            output_file = output_path / self.sanitize_filename(article_id)
 
-        # Ensure browser is initialized
-        if not self._browser:
-            return DownloadResult(
-                success=False,
-                error="Browser not initialized. Use 'async with WileyPDFDownloader() as downloader:'",
-                doi=doi,
-                publisher=self.publisher,
-            )
+        pdf_content = await self._download_direct_http(url, output_file)
 
-        pdf_content = None
-
-        try:
-            if self.headless:
-                # In headless mode, PDF triggers download
-                pdf_content = await self._download_with_download_handler(
-                    url, output_file, wait_time
-                )
-
-                # If download handler didn't work, try CDP fetch as fallback
-                if not pdf_content:
+        if not pdf_content and self._browser:
+            try:
+                if self.headless:
+                    pdf_content = await self._download_with_download_handler(
+                        url, output_file, wait_time
+                    )
+                    if not pdf_content:
+                        pdf_content = await self._download_with_cdp_fetch(
+                            url, output_file, wait_time
+                        )
+                else:
                     pdf_content = await self._download_with_cdp_fetch(
                         url, output_file, wait_time
                     )
-            else:
-                # In non-headless mode, PDF is displayed in browser
-                pdf_content = await self._download_with_cdp_fetch(
-                    url, output_file, wait_time
-                )
-
-            if pdf_content and pdf_content[:4] == b"%PDF":
-                output_file.write_bytes(pdf_content)
-                return DownloadResult(
-                    success=True,
-                    file_path=output_file,
-                    file_size=len(pdf_content),
-                    doi=doi,
-                    publisher=self.publisher,
-                )
-            else:
+            except Exception as e:
                 return DownloadResult(
                     success=False,
-                    error="Failed to capture PDF content",
+                    error=f"Browser download failed: {str(e)}",
                     doi=doi,
                     publisher=self.publisher,
                 )
 
-        except Exception as e:
+        if pdf_content and pdf_content[:4] == b"%PDF":
+            output_file.write_bytes(pdf_content)
+            return DownloadResult(
+                success=True,
+                file_path=output_file,
+                file_size=len(pdf_content),
+                doi=normalized_doi if doi else None,
+                publisher=self.publisher,
+            )
+        else:
             return DownloadResult(
                 success=False,
-                error=str(e),
-                doi=doi,
+                error="Failed to download PDF. The article may require subscription access.",
+                doi=normalized_doi if doi else None,
                 publisher=self.publisher,
             )
 
@@ -420,16 +375,15 @@ async def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Download PDF from Wiley Online Library",
+        description="Download PDF from PNAS",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    %(prog)s https://onlinelibrary.wiley.com/doi/pdfdirect/10.1002/jcsm.70098
-    %(prog)s https://onlinelibrary.wiley.com/doi/pdfdirect/10.1002/jcsm.70098 --output-dir ./papers
-    %(prog)s https://onlinelibrary.wiley.com/doi/pdfdirect/10.1002/jcsm.70098 --filename my_paper.pdf --headless
+    %(prog)s https://www.pnas.org/content/pnas/12345678.full.pdf
+    %(prog)s https://www.pnas.org/content/pnas/12345678.full.pdf --output-dir ./papers
         """,
     )
-    parser.add_argument("url", help="Wiley pdfdirect URL to download")
+    parser.add_argument("url", help="PNAS PDF URL to download")
     parser.add_argument(
         "--output-dir",
         "-o",
@@ -463,18 +417,16 @@ Examples:
 
     args = parser.parse_args()
 
-    if not WileyPDFDownloader.is_supported_url(args.url):
+    if not PNASPDFDownloader.is_supported_url(args.url):
         print("Error: Unsupported URL format")
-        print("Expected: https://onlinelibrary.wiley.com/doi/pdfdirect/...")
+        print("Expected: https://www.pnas.org/content/pnas/.../full.pdf")
         return 1
 
     print(f"Downloading: {args.url}")
     print(f"Output directory: {args.output_dir}")
-    print(f"Mode: {'headless' if args.headless else 'visible browser'}")
 
-    async with WileyPDFDownloader(
-        headless=args.headless,
-        timeout=args.timeout,
+    async with PNASPDFDownloader(
+        headless=args.headless, timeout=args.timeout
     ) as downloader:
         result = await downloader.download(
             url=args.url,
@@ -485,7 +437,8 @@ Examples:
 
     if result.success:
         print(f"Success: {result.file_path} ({result.file_size:,} bytes)")
-        print(f"DOI: {result.doi}")
+        if result.doi:
+            print(f"DOI: {result.doi}")
         return 0
     else:
         print(f"Error: {result.error}")
@@ -496,3 +449,4 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(asyncio.run(main()))
+

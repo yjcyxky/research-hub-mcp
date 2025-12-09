@@ -5,7 +5,7 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 
 @dataclass
@@ -32,14 +32,34 @@ class BasePlugin(abc.ABC):
         return False
 
     @abc.abstractmethod
+    def is_supported_doi(self, doi: str) -> bool:
+        """
+        Check if this plugin supports the given DOI.
+        
+        Args:
+            doi: Normalized DOI string
+            
+        Returns:
+            True if this plugin can handle this DOI
+        """
+
+    @abc.abstractmethod
     def build_download_url(self, doi: str) -> Optional[str]:
-        """Return a direct download URL if this plugin supports the DOI."""
+        """
+        Build a download URL from a DOI.
+        
+        Args:
+            doi: Normalized DOI string
+            
+        Returns:
+            Download URL or None if DOI is not supported
+        """
 
     @abc.abstractmethod
     async def download(
         self,
         url: str,
-        output_dir: str | Path = ".",
+        output_dir: Union[str, Path] = ".",
         filename: Optional[str] = None,
         wait_time: float = 5.0,
         doi: Optional[str] = None,
