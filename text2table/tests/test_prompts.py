@@ -17,7 +17,7 @@ class TestSystemMessages:
 
     def test_system_message_default_exists(self):
         assert SYSTEM_MESSAGE_DEFAULT
-        assert "Markdown table" in SYSTEM_MESSAGE_DEFAULT
+        assert "TSV table" in SYSTEM_MESSAGE_DEFAULT
 
     def test_system_message_with_thinking_exists(self):
         assert SYSTEM_MESSAGE_WITH_THINKING
@@ -25,7 +25,7 @@ class TestSystemMessages:
 
     def test_default_user_instruction_exists(self):
         assert DEFAULT_USER_INSTRUCTION
-        assert "Markdown table" in DEFAULT_USER_INSTRUCTION
+        assert "TSV table" in DEFAULT_USER_INSTRUCTION
 
 
 class TestFormatEntitiesAsList:
@@ -166,7 +166,7 @@ class TestBuildEntityExtractionPrompt:
         )
         assert "<think>" not in prompt
         assert "</think>" not in prompt
-        assert "only the final Markdown table" in prompt
+        assert "only the final TSV table" in prompt
 
     def test_multi_row_rules_present(self):
         """Prompt should contain rules about generating multiple rows."""
@@ -187,3 +187,24 @@ class TestBuildEntityExtractionPrompt:
         )
         assert "Notes column is ONLY for" in prompt
         assert "Do NOT put other valid entities in Notes" in prompt
+
+    def test_soft_hint_guidance_included(self):
+        """GLiNER outputs should be treated as soft hints, not hard constraints."""
+        prompt = build_entity_extraction_prompt(
+            text="Text",
+            entity_block="- drug: test",
+            headers="drug, ade",
+            use_gliner=True,
+        )
+        assert "SOFT hints" in prompt
+        assert "Prefer the source text" in prompt
+
+    def test_prompt_without_gliner_uses_generic_guidance(self):
+        prompt = build_entity_extraction_prompt(
+            text="Text",
+            entity_block="- Entity extraction disabled",
+            headers="drug, ade",
+            use_gliner=False,
+        )
+        assert "No upstream entity hints" in prompt
+        assert "GLiNER soft hints" not in prompt

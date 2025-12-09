@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -89,7 +88,13 @@ class TableRow:
 
     def normalized_cells(self) -> Dict[str, str]:
         """Return normalized cell values."""
-        return {k.lower(): v.lower().strip() for k, v in self.cells.items() if v and v.strip()}
+        return {
+            k.lower(): v.lower().strip()
+            for k, v in self.cells.items()
+            if v
+            and v.strip()
+            and k.lower() != "confidence"
+        }
 
     def __hash__(self) -> int:
         items = tuple(sorted(self.normalized_cells().items()))
@@ -106,47 +111,29 @@ class ExtractedTable:
     """Represents an extracted table with headers and rows."""
     headers: List[str]
     rows: List[TableRow]
-    raw_markdown: str = ""
+    raw_table: str = ""
 
     @classmethod
-    def from_markdown(cls, markdown: str, expected_headers: Optional[List[str]] = None) -> "ExtractedTable":
-        """Parse a Markdown table into ExtractedTable."""
-        lines = [line.strip() for line in markdown.strip().split("\n") if line.strip()]
-
-        # Find table lines (lines containing |)
-        table_lines = [line for line in lines if "|" in line]
-        if len(table_lines) < 2:
-            return cls(headers=[], rows=[], raw_markdown=markdown)
-
-        # Parse header
-        header_line = table_lines[0]
-        headers = [h.strip() for h in header_line.split("|") if h.strip()]
-
-        # Skip separator line (contains ---)
-        data_start = 1
-        if len(table_lines) > 1 and re.match(r"^[\|\s\-:]+$", table_lines[1]):
-            data_start = 2
-
-        # Parse rows
-        rows = []
-        for idx, line in enumerate(table_lines[data_start:]):
-            cells = [c.strip() for c in line.split("|") if c.strip() or line.count("|") > len(headers)]
-            # Handle empty cells
-            raw_cells = line.split("|")[1:-1] if line.startswith("|") and line.endswith("|") else line.split("|")
-            cells = [c.strip() for c in raw_cells]
-
+    def from_tsv(cls, tsv: str, expected_headers: Optional[List[str]] = None) -> "ExtractedTable":
+        """Parse a TSV table into ExtractedTable."""
+        lines = [line.strip() for line in tsv.strip().split("\n") if line.strip()]
+        if not lines:
+            return cls(headers=[], rows=[], raw_table=tsv)
+        headers = [h.strip() for h in lines[0].split("\t")]
+        rows: List[TableRow] = []
+        for idx, line in enumerate(lines[1:]):
+            cells = [c.strip() for c in line.split("\t")]
             if len(cells) >= len(headers):
                 cell_dict = {headers[i]: cells[i] if i < len(cells) else "" for i in range(len(headers))}
                 rows.append(TableRow(cells=cell_dict, row_idx=idx))
-
-        return cls(headers=headers, rows=rows, raw_markdown=markdown)
+        return cls(headers=headers, rows=rows, raw_table=tsv)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
             "headers": self.headers,
             "rows": [{"cells": row.cells, "row_idx": row.row_idx} for row in self.rows],
-            "raw_markdown": self.raw_markdown,
+            "raw_table": self.raw_table,
         }
 
 
@@ -224,9 +211,10 @@ def table_to_relations(table: ExtractedTable, relation_type: str) -> List[Relati
     relations = []
     for row in table.rows:
         if row.cells:
+            entities = {k: v for k, v in row.cells.items() if k.lower() != "confidence"}
             relations.append(Relation(
                 relation_type=relation_type,
-                entities=row.cells,
+                entities=entities,
             ))
     return relations
 
@@ -527,55 +515,99 @@ def run_text2table_predictions(
     server_url: str,
     gliner_url: Optional[str] = None,
     gliner_model: str = "Ihor/gliner-biomed-large-v1.0",
-    qwen_model: Optional[str] = None,
+    model: Optional[str] = None,
     threshold: float = 0.5,
+    gliner_soft_threshold: Optional[float] = None,
+    enable_row_validation: bool = False,
+    row_validation_mode: str = "substring",
     disable_gliner: bool = False,
     max_new_tokens: int = 512,
     temperature: float = 0.2,
     show_progress: bool = True,
+    concurrency: int = 1,
+    dump_jsonl: Optional[Path] = None,
+    flush_every: int = 20,
 ) -> List[EvalSample]:
     """Run text2table pipeline on samples."""
-    from text2table import Text2Table
+    import asyncio
+
+    from text2table import AsyncText2Table, BatchItem, BatchResult, DEFAULT_USER_PROMPT
 
     logger.info(f"Running text2table with labels: {labels}")
     logger.info(f"Server URL: {server_url}")
+    logger.info("Concurrency: %d", concurrency)
 
-    extractor = Text2Table(
+    extractor = AsyncText2Table(
         labels=labels,
         gliner_model_name=gliner_model,
-        qwen_model_name=qwen_model,
+        model_name=model,
         threshold=threshold,
+        gliner_soft_threshold=gliner_soft_threshold,
         server_url=server_url,
         gliner_url=gliner_url,
         use_gliner=not disable_gliner,
+        enable_row_validation=enable_row_validation,
+        row_validation_mode=row_validation_mode,
     )
 
+    batch_items = [BatchItem(text=sample.text, index=idx) for idx, sample in enumerate(samples)]
+
+    progress = None
+    buffer: List[BatchResult] = []
+    if dump_jsonl:
+        dump_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        dump_jsonl.write_text("", encoding="utf-8")
+    if flush_every <= 0:
+        flush_every = 20
     if show_progress:
         try:
             from tqdm import tqdm
-            iterator = tqdm(samples, desc="Extracting tables")
-        except ImportError:
-            iterator = samples
-    else:
-        iterator = samples
 
-    for sample in iterator:
+            progress = tqdm(total=len(batch_items), desc="Extracting tables")
+        except ImportError:
+            progress = None
+
+    async def handle_result(res: BatchResult) -> None:
+        if progress:
+            progress.update(1)
+        if dump_jsonl:
+            buffer.append(res)
+            if len(buffer) >= flush_every:
+                _append_jsonl(dump_jsonl, buffer)
+                buffer.clear()
+
+    async def _run_all() -> List[BatchResult]:
         try:
-            table_md, entities = extractor.run(
-                sample.text,
+            results = await extractor.run_many(
+                batch_items,
+                user_prompt=DEFAULT_USER_PROMPT,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
+                top_p=0.9,
+                concurrency=max(1, concurrency),
+                on_result=handle_result if progress else None,
             )
+            return results
+        finally:
+            await extractor.close()
+            if progress:
+                progress.close()
+            if dump_jsonl and buffer:
+                _append_jsonl(dump_jsonl, buffer)
 
-            sample.pred_table = ExtractedTable.from_markdown(table_md, expected_headers=labels)
+    results = asyncio.run(_run_all())
+
+    for result in results:
+        idx = result.index
+        sample = samples[idx]
+        if result.status == "ok":
+            sample.pred_table = ExtractedTable.from_tsv(result.table, expected_headers=labels)
             sample.pred_relations = table_to_relations(sample.pred_table, "extracted")
-
-        except Exception as e:
-            logger.warning(f"Extraction failed: {e}")
+        else:
+            logger.warning("Extraction failed for index %d: %s", idx, result.error)
             sample.pred_table = ExtractedTable(headers=labels, rows=[])
             sample.pred_relations = []
 
-    extractor.close()
     return samples
 
 
@@ -831,7 +863,7 @@ Examples:
         help="GLiNER model name",
     )
     parser.add_argument(
-        "--qwen-model",
+        "--model",
         type=str,
         help="vLLM model name (uses server default if not specified)",
     )
@@ -840,6 +872,12 @@ Examples:
         type=float,
         default=0.5,
         help="GLiNER confidence threshold",
+    )
+    parser.add_argument(
+        "--gliner-soft-threshold",
+        type=float,
+        default=None,
+        help="Lower GLiNER threshold for recall-only candidates (marked low-confidence)",
     )
     parser.add_argument(
         "--disable-gliner",
@@ -858,6 +896,24 @@ Examples:
         default=0.2,
         help="Generation temperature",
     )
+    parser.add_argument(
+        "--enable-row-validation",
+        action="store_true",
+        help="Drop rows not supported by the source text (substring check)",
+    )
+    parser.add_argument(
+        "--row-validation-mode",
+        type=str,
+        default="substring",
+        choices=["substring", "llm"],
+        help="Row validation strategy: substring or llm",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Max concurrent in-flight requests when extracting tables",
+    )
 
     # Output options
     parser.add_argument(
@@ -869,6 +925,12 @@ Examples:
         "--dump-jsonl",
         type=str,
         help="Path to dump sample JSONL for debugging/visualization",
+    )
+    parser.add_argument(
+        "--flush-every",
+        type=int,
+        default=20,
+        help="When dumping JSONL, flush to disk every N samples",
     )
     parser.add_argument(
         "--dump-limit",
@@ -920,12 +982,18 @@ Examples:
         server_url=args.server_url,
         gliner_url=args.gliner_url,
         gliner_model=args.gliner_model,
-        qwen_model=args.qwen_model,
+        gliner_soft_threshold=args.gliner_soft_threshold,
+        model=args.model,
         threshold=args.threshold,
+        enable_row_validation=args.enable_row_validation,
+        row_validation_mode=args.row_validation_mode,
         disable_gliner=args.disable_gliner,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         show_progress=not args.no_progress,
+        concurrency=max(1, args.concurrency),
+        dump_jsonl=Path(args.dump_jsonl) if args.dump_jsonl else None,
+        flush_every=args.flush_every,
     )
 
     # Calculate metrics
@@ -938,7 +1006,7 @@ Examples:
         "settings": {
             "server_url": args.server_url,
             "gliner_model": args.gliner_model,
-            "qwen_model": args.qwen_model,
+            "model": args.model,
             "threshold": args.threshold,
             "disable_gliner": args.disable_gliner,
         },

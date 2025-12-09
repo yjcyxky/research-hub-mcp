@@ -163,7 +163,7 @@ python benches/re/table_extraction_eval.py \
     --data-file /tmp/test_data.jsonl \
     --labels drug dose num_of_animal duration \
     --server-url http://localhost:8000/v1 \
-    --qwen-model Qwen/Qwen3-8B \
+    --model Qwen/Qwen3-8B \
     --dump-jsonl /tmp/drug_attr_results.jsonl
 ```
 
