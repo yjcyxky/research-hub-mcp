@@ -92,6 +92,9 @@ enum Commands {
         /// Disable headless browser mode (show browser window)
         #[arg(long)]
         disable_headless: bool,
+        /// Use local GROBID server instead of public endpoint
+        #[arg(long)]
+        enable_local_grobid: bool,
     },
     /// Extract metadata from a PDF file
     Metadata {
@@ -231,6 +234,7 @@ async fn main() -> anyhow::Result<()> {
             no_verify,
             markdown,
             disable_headless,
+            enable_local_grobid,
         } => {
             let download_tool = DownloadTool::new(client, config.clone())?;
             let input = DownloadInput {
@@ -247,6 +251,7 @@ async fn main() -> anyhow::Result<()> {
                     DownloadOutputFormat::Pdf
                 },
                 headless: !disable_headless,
+                enable_local_grobid,
             };
 
             let result = download_tool.download_paper(input).await?;

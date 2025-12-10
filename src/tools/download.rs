@@ -52,6 +52,10 @@ pub struct DownloadInput {
     #[serde(default = "default_headless")]
     #[schemars(description = "Run browser in headless mode (default: true)")]
     pub headless: bool,
+    /// Whether to use local GROBID server instead of public endpoint (default: false)
+    #[serde(default)]
+    #[schemars(description = "Use local GROBID server. When false, uses public endpoint: https://kermitt2-grobid.hf.space")]
+    pub enable_local_grobid: bool,
 }
 
 /// Default for headless mode
@@ -632,7 +636,7 @@ impl DownloadTool {
             return Ok(());
         };
 
-        match self.run_pdf2text(&pdf_path).await {
+        match self.run_pdf2text(&pdf_path, input.enable_local_grobid).await {
             Ok(Some(markdown_path)) => {
                 result.markdown_path = Some(markdown_path);
             }
@@ -651,7 +655,7 @@ impl DownloadTool {
         Ok(())
     }
 
-    async fn run_pdf2text(&self, pdf_path: &Path) -> Result<Option<PathBuf>> {
+    async fn run_pdf2text(&self, pdf_path: &Path, enable_local_grobid: bool) -> Result<Option<PathBuf>> {
         if !pdf_path.exists() {
             return Err(crate::Error::InvalidInput {
                 field: "pdf_path".to_string(),
@@ -674,18 +678,27 @@ impl DownloadTool {
         let pdf_path_clone = pdf_path.to_path_buf();
         let output_dir_clone = output_dir.clone();
 
+        // Determine GROBID URL based on enable_local_grobid flag
+        let (grobid_url, no_auto_start) = if enable_local_grobid {
+            // Use local GROBID (auto-start if needed)
+            (None, false)
+        } else {
+            // Use public GROBID endpoint
+            (Some("https://kermitt2-grobid.hf.space"), true)
+        };
+
         // Run PyO3-based pdf2text in a blocking task
         let pyo3_result = tokio::task::spawn_blocking(move || {
             crate::python_embed::run_pdf2text(
                 &pdf_path_clone,
                 &output_dir_clone,
-                Some("https://kermitt2-grobid.hf.space"), // grobid_url
-                true,                                     // no_auto_start
-                true,                                     // no_figures
-                true,                                     // no_tables
-                false,                                    // copy_pdf
-                true,                                     // overwrite
-                false,                                    // no_markdown
+                grobid_url,      // grobid_url
+                no_auto_start,    // no_auto_start
+                true,             // no_figures
+                true,             // no_tables
+                false,            // copy_pdf
+                true,             // overwrite
+                false,            // no_markdown
             )
         })
         .await
@@ -1193,6 +1206,7 @@ impl DownloadTool {
                 .or_else(|| shared_settings.category.clone()),
             overwrite: shared_settings.overwrite,
             verify_integrity: shared_settings.verify_integrity,
+            enable_local_grobid: false,
             output_format: DownloadOutputFormat::Pdf,
             headless: true, // Batch downloads always use headless mode
         })
@@ -2617,6 +2631,7 @@ mod tests {
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
             headless: true,
+            enable_local_grobid: false,
         };
         assert!(DownloadTool::validate_input(&empty_input).is_err());
 
@@ -2631,6 +2646,7 @@ mod tests {
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
             headless: true,
+            enable_local_grobid: false,
         };
         assert!(DownloadTool::validate_input(&both_input).is_err());
 
@@ -2645,6 +2661,7 @@ mod tests {
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
             headless: true,
+            enable_local_grobid: false,
         };
         assert!(DownloadTool::validate_input(&valid_doi).is_ok());
 
@@ -2659,6 +2676,7 @@ mod tests {
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
             headless: true,
+            enable_local_grobid: false,
         };
         assert!(DownloadTool::validate_input(&valid_url).is_ok());
 
@@ -2673,6 +2691,7 @@ mod tests {
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
             headless: true,
+            enable_local_grobid: false,
         };
         assert!(DownloadTool::validate_input(&invalid_filename).is_err());
     }
@@ -2724,6 +2743,7 @@ mod tests {
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
             headless: true,
+            enable_local_grobid: false,
         };
 
         let metadata = Some(PaperMetadata::new("10.1038/test".to_string()));
@@ -2789,6 +2809,7 @@ mod tests {
             verify_integrity: false,
             output_format: DownloadOutputFormat::Pdf,
             headless: true,
+            enable_local_grobid: false,
         };
 
         let metadata = PaperMetadata::new("10.1038/test".to_string());
@@ -3059,6 +3080,7 @@ mod tests {
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
             headless: true,
+            enable_local_grobid: false,
         };
 
         let result = DownloadTool::validate_input(&both_input);
@@ -3078,6 +3100,7 @@ mod tests {
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
             headless: true,
+            enable_local_grobid: false,
         };
 
         let result_neither = DownloadTool::validate_input(&neither_input);

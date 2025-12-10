@@ -472,6 +472,7 @@ impl ServerHandler for ResearchServerHandler {
                         verify_integrity: true,
                         output_format,
                         headless: true,
+                        enable_local_grobid: false,
                     };
 
                     debug!("Attempting download with input: {:?}", input);
