@@ -47,6 +47,8 @@ fn create_doi_query(doi: &str) -> SearchQuery {
         max_results: 1,
         offset: 0,
         params: HashMap::new(),
+        sources: None,
+        metadata_sources: None,
     }
 }
 
@@ -58,6 +60,8 @@ fn create_title_query(title: &str, max_results: u32) -> SearchQuery {
         max_results,
         offset: 0,
         params: HashMap::new(),
+        sources: None,
+        metadata_sources: None,
     }
 }
 
@@ -69,6 +73,8 @@ fn create_keyword_query(keywords: &str, max_results: u32) -> SearchQuery {
         max_results,
         offset: 0,
         params: HashMap::new(),
+        sources: None,
+        metadata_sources: None,
     }
 }
 
@@ -262,6 +268,8 @@ async fn test_openalex_search_by_author() {
         max_results: 3,
         offset: 0,
         params: HashMap::new(),
+        sources: None,
+        metadata_sources: None,
     };
 
     let result = tokio::time::timeout(config.test_timeout, provider.search(&query, &context)).await;

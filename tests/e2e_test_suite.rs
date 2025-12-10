@@ -37,6 +37,8 @@ fn create_search_query(query: &str, search_type: SearchType) -> SearchQuery {
         max_results: 5,
         offset: 0,
         params: HashMap::new(),
+        sources: None,
+        metadata_sources: None,
     }
 }
 
@@ -277,6 +279,8 @@ async fn test_meta_search_client() {
         max_results: 10,
         offset: 0,
         params: HashMap::new(),
+        sources: None,
+        metadata_sources: None,
     };
 
     let result = client.search(&query).await;
@@ -317,6 +321,8 @@ async fn test_search_tool() {
         search_type: ToolSearchType::Auto,
         limit: 1,
         offset: 0,
+        sources: None,
+        metadata_sources: None,
     };
 
     let result = search_tool.search_papers(input).await;
@@ -364,6 +370,8 @@ async fn test_download_tool() {
         overwrite: false,
         verify_integrity: false,
         output_format: DownloadOutputFormat::Pdf,
+        headless: true,
+        enable_local_grobid: false,
     };
 
     let result = download_tool.download_paper(invalid_input).await;
@@ -379,6 +387,8 @@ async fn test_download_tool() {
         overwrite: false,
         verify_integrity: false,
         output_format: DownloadOutputFormat::Pdf,
+        headless: true,
+        enable_local_grobid: false,
     };
 
     let result = download_tool.download_paper(both_input).await;
@@ -560,6 +570,8 @@ async fn test_error_handling() {
         search_type: ToolSearchType::Auto,
         limit: 10,
         offset: 0,
+        sources: None,
+        metadata_sources: None,
     };
 
     let result = search_tool.search_papers(empty_input).await;
@@ -583,6 +595,8 @@ async fn test_error_handling() {
         search_type: ToolSearchType::Auto,
         limit: 0, // Invalid
         offset: 0,
+        sources: None,
+        metadata_sources: None,
     };
 
     let result = search_tool.search_papers(invalid_limit).await;
@@ -607,6 +621,8 @@ mod integration_tests {
             search_type: ToolSearchType::Doi,
             limit: 1,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
 
         let search_result = search_tool.search_papers(search_input).await;
@@ -634,6 +650,8 @@ mod integration_tests {
                     overwrite: true,
                     verify_integrity: false,
                     output_format: DownloadOutputFormat::Pdf,
+                    headless: true,
+                    enable_local_grobid: false,
                 };
 
                 let download_result = download_tool.download_paper(download_input).await;

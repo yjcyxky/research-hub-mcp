@@ -33,6 +33,8 @@ async fn test_e2e_download_and_metadata_flow() -> Result<()> {
         overwrite: true,
         verify_integrity: false, // Skip integrity check for speed
         output_format: DownloadOutputFormat::Pdf,
+        headless: true,
+        enable_local_grobid: false,
     };
 
     // Attempt the download (this might fail in CI environments without internet)
@@ -160,6 +162,8 @@ async fn test_url_resolution_errors() -> Result<()> {
         overwrite: false,
         verify_integrity: false,
         output_format: DownloadOutputFormat::Pdf,
+        headless: true,
+        enable_local_grobid: false,
     };
 
     let result = download_tool.download_paper(download_input).await;
@@ -195,6 +199,8 @@ async fn test_provider_failure_messages() -> Result<()> {
         overwrite: false,
         verify_integrity: false,
         output_format: DownloadOutputFormat::Pdf,
+        headless: true,
+        enable_local_grobid: false,
     };
 
     let result = download_tool.download_paper(download_input).await;
@@ -241,6 +247,8 @@ async fn test_concurrent_downloads() -> Result<()> {
                 overwrite: false,
                 verify_integrity: false,
                 output_format: DownloadOutputFormat::Pdf,
+                headless: true,
+                enable_local_grobid: false,
             };
 
             tool_clone.download_paper(download_input).await

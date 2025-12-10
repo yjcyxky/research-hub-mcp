@@ -79,6 +79,8 @@ async fn test_categorization_feature_integration() {
         overwrite: true,
         verify_integrity: false,
         output_format: DownloadOutputFormat::Pdf,
+        enable_local_grobid: false,
+        headless: true,
     };
 
     // Note: This would fail in actual download because the DOI doesn't exist,

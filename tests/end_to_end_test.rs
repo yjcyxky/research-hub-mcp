@@ -62,6 +62,8 @@ async fn test_complete_paper_search_workflow() {
         search_type: SearchType::Title,
         limit: 10,
         offset: 0,
+        sources: None,
+        metadata_sources: None,
     };
     let search_result = search_tool.search_papers(search_input).await;
     assert!(search_result.is_ok(), "Title search should succeed");
@@ -85,6 +87,8 @@ async fn test_complete_paper_search_workflow() {
         overwrite: false,
         verify_integrity: false,
         output_format: DownloadOutputFormat::Pdf,
+        headless: true,
+        enable_local_grobid: false,
     };
     let download_result = download_tool.download_paper(download_input).await;
     // Note: This might fail with mock server as we don't have actual PDF URLs
@@ -176,6 +180,8 @@ async fn test_error_recovery_workflow() {
         search_type: SearchType::Doi,
         limit: 10,
         offset: 0,
+        sources: None,
+        metadata_sources: None,
     };
     let result = search_tool.search_papers(search_input).await;
     // This might fail due to retry logic, but that's expected behavior
@@ -220,6 +226,8 @@ async fn test_concurrent_operations_scenario() {
                 search_type: SearchType::Doi,
                 limit: 10,
                 offset: 0,
+                sources: None,
+                metadata_sources: None,
             };
             search_tool_clone.search_papers(search_input).await
         });

@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rust_sci_hub_mcp::{Config, Server};
+use rust_research_mcp::{server::ResearchServerHandler, Config, Server};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
@@ -19,9 +19,9 @@ fn benchmark_handler_initialization(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let config = black_box(Config::default());
-                let mut handler =
-                    rust_sci_hub_mcp::server::SciHubServerHandler::new(Arc::new(config));
-                black_box(handler.initialize().await.unwrap())
+                let handler =
+                    ResearchServerHandler::new(Arc::new(config)).unwrap();
+                black_box(handler)
             })
         })
     });
@@ -34,7 +34,7 @@ fn benchmark_ping_response(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let config = black_box(Config::default());
-                let handler = rust_sci_hub_mcp::server::SciHubServerHandler::new(Arc::new(config));
+                let handler = ResearchServerHandler::new(Arc::new(config)).unwrap();
                 black_box(handler.ping().await.unwrap())
             })
         })

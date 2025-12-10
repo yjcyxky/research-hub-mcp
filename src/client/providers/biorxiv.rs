@@ -942,7 +942,7 @@ mod tests {
         assert!(doi_url.contains("details/biorxiv"));
         assert!(doi_url.contains("10.1101/2023.01.01.000001"));
 
-        let search_url = provider.build_date_search_url("2023-01-01", "2023-01-31");
+        let search_url = provider.build_date_search_url("2023-01-01", "2023-01-31", None);
         assert!(search_url.contains("2023-01-01"));
         assert!(search_url.contains("2023-01-31"));
     }

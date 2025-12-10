@@ -30,6 +30,8 @@ async fn test_sql_injection_attempts() {
             search_type: SearchType::Doi,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
         let result = search_tool.search_papers(search_input).await;
         // Should fail validation or return empty results, not crash
@@ -69,6 +71,8 @@ async fn test_xss_injection_attempts() {
             search_type: SearchType::Title,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
         let result = search_tool.search_papers(search_input).await;
         // Should not execute any scripts, should be properly escaped/validated
@@ -114,6 +118,8 @@ async fn test_path_traversal_attempts() {
             overwrite: false,
             verify_integrity: false,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
+            enable_local_grobid: false,
         };
         let result = download_tool.download_paper(download_input).await;
         // Should fail validation due to invalid filename
@@ -154,6 +160,8 @@ async fn test_large_input_dos_attempts() {
         search_type: SearchType::Title,
         limit: 10,
         offset: 0,
+        sources: None,
+        metadata_sources: None,
     };
     let result = search_tool.search_papers(search_input).await;
     assert!(result.is_err(), "Extremely large query should be rejected");
@@ -165,6 +173,8 @@ async fn test_large_input_dos_attempts() {
         search_type: SearchType::Doi,
         limit: 10,
         offset: 0,
+        sources: None,
+        metadata_sources: None,
     };
     let result = search_tool.search_papers(search_input).await;
     assert!(result.is_err(), "Extremely long DOI should be rejected");
@@ -197,6 +207,8 @@ async fn test_null_byte_injection() {
             search_type: SearchType::Doi,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
         let search_result = search_tool.search_papers(search_input).await;
         if search_result.is_ok() {
@@ -218,6 +230,8 @@ async fn test_null_byte_injection() {
             overwrite: false,
             verify_integrity: false,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
+            enable_local_grobid: false,
         };
         let download_result = download_tool.download_paper(download_input).await;
         assert!(
@@ -258,6 +272,8 @@ async fn test_command_injection_attempts() {
             search_type: SearchType::Title,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
         let search_result = search_tool.search_papers(search_input).await;
         if search_result.is_ok() {
@@ -279,6 +295,8 @@ async fn test_command_injection_attempts() {
             overwrite: false,
             verify_integrity: false,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
+            enable_local_grobid: false,
         };
         let download_result = download_tool.download_paper(download_input).await;
         assert!(
@@ -336,6 +354,8 @@ async fn test_unicode_handling() {
             search_type: SearchType::Title,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
         let _search_result = search_tool.search_papers(search_input).await;
         // Should not crash, may return empty results or error
@@ -350,6 +370,8 @@ async fn test_unicode_handling() {
             overwrite: false,
             verify_integrity: false,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
+            enable_local_grobid: false,
         };
         let download_result = download_tool.download_paper(download_input).await;
         // Should either succeed with sanitized filename or fail validation
@@ -401,6 +423,8 @@ async fn test_memory_exhaustion_protection() {
         overwrite: false,
         verify_integrity: false,
         output_format: DownloadOutputFormat::Pdf,
+        headless: true,
+        enable_local_grobid: false,
     };
     let result = download_tool.download_paper(download_input).await;
     // Should either fail early with size check or handle gracefully

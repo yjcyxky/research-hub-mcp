@@ -7,7 +7,7 @@ keywords = ["mcp", "academic", "papers", "research", "knowledge"]
 license = "GPL-3.0"
 name = "rust-research-mcp"
 repository = "https://github.com/Ladvien/sci_hub_mcp"
-rust-version = "1.70"
+rust-version = "1.90"
 version = "0.6.7"
 exclude = [
     "build/",

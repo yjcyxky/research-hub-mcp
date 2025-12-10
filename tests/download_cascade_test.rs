@@ -32,6 +32,8 @@ async fn test_download_cascade_with_provider_failures() -> Result<()> {
         overwrite: false,
         verify_integrity: false,
         output_format: DownloadOutputFormat::Pdf,
+        headless: true,
+        enable_local_grobid: false,
     };
 
     // This should attempt the cascade and eventually fail gracefully
@@ -73,6 +75,8 @@ async fn test_url_validation_error_handling() -> Result<()> {
         overwrite: false,
         verify_integrity: false,
         output_format: DownloadOutputFormat::Pdf,
+        headless: true,
+        enable_local_grobid: false,
     };
 
     let result = download_tool.download_paper(download_input).await;
@@ -102,6 +106,8 @@ async fn test_input_validation() -> Result<()> {
         overwrite: false,
         verify_integrity: false,
         output_format: DownloadOutputFormat::Pdf,
+        headless: true,
+        enable_local_grobid: false,
     };
 
     let result = download_tool.download_paper(download_input).await;
@@ -145,6 +151,8 @@ async fn test_search_query_validation() -> Result<()> {
             max_results: 1,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         },
         SearchQuery {
             query: "quantum computing".to_string(),
@@ -152,6 +160,8 @@ async fn test_search_query_validation() -> Result<()> {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         },
         SearchQuery {
             query: "John Smith".to_string(),
@@ -159,6 +169,8 @@ async fn test_search_query_validation() -> Result<()> {
             max_results: 5,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         },
     ];
 

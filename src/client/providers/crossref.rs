@@ -450,6 +450,8 @@ mod tests {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let url = provider.build_search_url(&query).unwrap();
@@ -468,6 +470,8 @@ mod tests {
             max_results: 1,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let url = provider.build_search_url(&query).unwrap();

@@ -47,6 +47,8 @@ fn create_domain_queries() -> HashMap<String, Vec<SearchQuery>> {
                 max_results: 10,
                 offset: 0,
                 params: HashMap::new(),
+                sources: None,
+                metadata_sources: None,
             },
             SearchQuery {
                 query: "arXiv:1706.03762".to_string(),
@@ -54,6 +56,8 @@ fn create_domain_queries() -> HashMap<String, Vec<SearchQuery>> {
                 max_results: 1,
                 offset: 0,
                 params: HashMap::new(),
+                sources: None,
+                metadata_sources: None,
             },
         ],
     );
@@ -68,6 +72,8 @@ fn create_domain_queries() -> HashMap<String, Vec<SearchQuery>> {
                 max_results: 10,
                 offset: 0,
                 params: HashMap::new(),
+                sources: None,
+                metadata_sources: None,
             },
             SearchQuery {
                 query: "10.1038/nature12373".to_string(),
@@ -75,6 +81,8 @@ fn create_domain_queries() -> HashMap<String, Vec<SearchQuery>> {
                 max_results: 1,
                 offset: 0,
                 params: HashMap::new(),
+                sources: None,
+                metadata_sources: None,
             },
         ],
     );
@@ -88,6 +96,8 @@ fn create_domain_queries() -> HashMap<String, Vec<SearchQuery>> {
             max_results: 10,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         }],
     );
 
@@ -124,6 +134,8 @@ async fn test_complete_research_workflow() {
         search_type: ToolSearchType::Title,
         limit: 5,
         offset: 0,
+        sources: None,
+        metadata_sources: None,
     };
 
     let start_time = Instant::now();
@@ -151,6 +163,8 @@ async fn test_complete_research_workflow() {
                 category: Some("machine_learning".to_string()),
                 overwrite: true,
                 verify_integrity: true,
+                headless: true,
+                enable_local_grobid: false,
                 output_format: DownloadOutputFormat::Pdf,
             };
 
@@ -283,12 +297,15 @@ async fn test_concurrent_research_sessions() {
                         SearchType::Title => ToolSearchType::Title,
                         SearchType::Doi => ToolSearchType::Doi,
                         SearchType::Author => ToolSearchType::Author,
+                        SearchType::TitleAbstract => ToolSearchType::TitleAbstract,
                         SearchType::Keywords => ToolSearchType::Title, // Map Keywords to Title
                         SearchType::Subject => ToolSearchType::Title,  // Map Subject to Title
                                                                         // AuthorYear doesn't exist in client::providers::SearchType
                     },
                     limit: query.max_results,
                     offset: query.offset,
+                    sources: query.sources,
+                    metadata_sources: query.metadata_sources,
                 };
 
                 let start_time = Instant::now();
@@ -424,6 +441,8 @@ async fn test_error_recovery_workflows() {
             search_type: ToolSearchType::Auto,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
 
         let result = search_tool.search_papers(search_input).await;
@@ -469,6 +488,8 @@ async fn test_provider_cascade_failover() {
             max_results: 1,
             offset: 0,
             params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
         };
 
         let search_start = Instant::now();
@@ -506,6 +527,8 @@ async fn test_circuit_breaker_behavior() {
                 search_type: ToolSearchType::Title,
                 limit: 1,
                 offset: 0,
+                sources: None,
+                metadata_sources: None,
             };
 
             search_tool.search_papers(search_input).await
@@ -561,6 +584,8 @@ async fn test_resource_cleanup_and_limits() {
         overwrite: true,
         verify_integrity: false,
         output_format: DownloadOutputFormat::Pdf,
+        headless: true,
+        enable_local_grobid: false,
     };
 
     // This should respect file size limits configured in the system
@@ -605,6 +630,8 @@ async fn test_concurrent_request_performance() {
                 search_type: ToolSearchType::Title,
                 limit: 1,
                 offset: 0,
+                sources: None,
+                metadata_sources: None,
             };
 
             let request_start = Instant::now();
@@ -697,6 +724,8 @@ async fn test_memory_usage_under_load() {
                     search_type: ToolSearchType::Title,
                     limit: 5,
                     offset: 0,
+                    sources: None,
+                    metadata_sources: None,
                 };
 
                 search_tool.search_papers(search_input).await
@@ -770,6 +799,8 @@ async fn test_security_input_validation() {
             overwrite: false,
             verify_integrity: false,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
+            enable_local_grobid: false,
         };
 
         let result = download_tool.download_paper(download_input).await;
@@ -798,6 +829,8 @@ async fn test_security_input_validation() {
             search_type: ToolSearchType::Auto,
             limit: 10,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
 
         let result = search_tool.search_papers(search_input).await;
@@ -837,6 +870,8 @@ async fn test_rate_limiting_enforcement() {
             search_type: ToolSearchType::Title,
             limit: 1,
             offset: 0,
+            sources: None,
+            metadata_sources: None,
         };
 
         let _result = search_tool.search_papers(search_input).await;
