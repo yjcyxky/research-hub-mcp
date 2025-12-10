@@ -315,13 +315,37 @@ pub fn run_plugin_download(
         // Prepare arguments
         let output_dir_str = output_dir.to_string_lossy().to_string();
         let plugin_options = PyDict::new(py);
-        let wiley_opts = PyDict::new(py);
-        wiley_opts
-            .set_item("headless", headless)
+        let opts = PyDict::new(py);
+        // TODO: We need a better way to pass options to the plugins
+        opts.set_item("headless", headless)
             .map_err(|e| format!("Failed to set headless: {e}"))?;
         plugin_options
-            .set_item("wiley", wiley_opts)
+            .set_item("wiley", opts.clone())
             .map_err(|e| format!("Failed to set wiley opts: {e}"))?;
+        plugin_options
+            .set_item("oxford", opts.clone())
+            .map_err(|e| format!("Failed to set oxford opts: {e}"))?;
+        plugin_options
+            .set_item("springer", opts.clone())
+            .map_err(|e| format!("Failed to set springer opts: {e}"))?;
+        plugin_options
+            .set_item("biorxiv", opts.clone())
+            .map_err(|e| format!("Failed to set biorxiv opts: {e}"))?;
+        plugin_options
+            .set_item("mdpi", opts.clone())
+            .map_err(|e| format!("Failed to set mdpi opts: {e}"))?;
+        plugin_options
+            .set_item("frontiers", opts.clone())
+            .map_err(|e| format!("Failed to set frontiers opts: {e}"))?;
+        plugin_options
+            .set_item("pnas", opts.clone())
+            .map_err(|e| format!("Failed to set pnas opts: {e}"))?;
+        plugin_options
+            .set_item("plos", opts.clone())
+            .map_err(|e| format!("Failed to set plos opts: {e}"))?;
+        plugin_options
+            .set_item("hindawi", opts.clone())
+            .map_err(|e| format!("Failed to set hindawi opts: {e}"))?;
 
         // Build kwargs
         let kwargs = PyDict::new(py);

@@ -14,7 +14,7 @@ use rust_research_mcp::{
     Config, ConfigOverrides,
 };
 use serde_json;
-use tracing::{info, Level};
+use tracing::{error, info, Level};
 
 #[derive(Parser)]
 #[command(name = "rust-research")]
@@ -89,6 +89,9 @@ enum Commands {
         /// Convert to Markdown after download
         #[arg(long)]
         markdown: bool,
+        /// Disable headless browser mode (show browser window)
+        #[arg(long)]
+        disable_headless: bool,
     },
     /// Extract metadata from a PDF file
     Metadata {
@@ -197,7 +200,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let results = search_tool.search_papers(input).await?;
 
-            println!(
+            info!(
                 "Found {} of {} results for '{}'",
                 results.returned_count, results.total_count, query
             );
@@ -209,7 +212,7 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or_else(|| "No title".into());
                 let doi = paper.metadata.doi.clone();
                 let source = paper.source.clone();
-                println!(
+                info!(
                     "{}. {} [DOI: {}] (source: {})",
                     idx + 1,
                     title,
@@ -227,6 +230,7 @@ async fn main() -> anyhow::Result<()> {
             overwrite,
             no_verify,
             markdown,
+            disable_headless,
         } => {
             let download_tool = DownloadTool::new(client, config.clone())?;
             let input = DownloadInput {
@@ -242,11 +246,12 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     DownloadOutputFormat::Pdf
                 },
+                headless: !disable_headless,
             };
 
             let result = download_tool.download_paper(input).await?;
             if let Some(err) = result.error {
-                println!("Download failed: {}", err);
+                error!("Download failed: {}", err);
                 return Ok(());
             }
 
@@ -255,18 +260,18 @@ async fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "unknown".into());
-            println!("Download succeeded: {}", file_path);
+            info!("Download succeeded: {}", file_path);
             if let Some(size) = result.file_size {
-                println!("Size: {:.2} MB", size as f64 / 1_048_576.0);
+                info!("Size: {:.2} MB", size as f64 / 1_048_576.0);
             }
             if let Some(plugin) = result.used_plugin.as_deref() {
-                println!("Plugin fallback used: {}", plugin);
+                info!("Plugin fallback used: {}", plugin);
             }
             if let Some(md) = result.markdown_path.as_ref() {
-                println!("Markdown generated: {}", md.display());
+                info!("Markdown generated: {}", md.display());
             }
             if let Some(warning) = result.post_process_error.as_ref() {
-                println!("Post-processing warning: {}", warning);
+                info!("Post-processing warning: {}", warning);
             }
         }
         Commands::Metadata { input } => {
@@ -279,7 +284,7 @@ async fn main() -> anyhow::Result<()> {
                 batch_files: None,
             };
             let result = extractor.extract_metadata(meta_input).await?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            info!("{}", serde_json::to_string_pretty(&result)?);
         }
         Commands::Pdf2text {
             pdf_file,
@@ -294,7 +299,7 @@ async fn main() -> anyhow::Result<()> {
             no_markdown,
         } => {
             use rust_research_mcp::tools::pdf2text::{Pdf2TextInput, Pdf2TextTool};
-            
+
             let pdf2text_tool = Pdf2TextTool::new(config.clone())?;
             let input = Pdf2TextInput {
                 pdf_file: pdf_file.map(|p| p.to_string_lossy().to_string()),
@@ -311,18 +316,18 @@ async fn main() -> anyhow::Result<()> {
 
             let result = pdf2text_tool.convert(input).await?;
             if result.success {
-                println!("Conversion succeeded!");
-                println!("Files processed: {}", result.files_processed);
+                info!("Conversion succeeded!");
+                info!("Files processed: {}", result.files_processed);
                 if let Some(json) = result.json_path {
-                    println!("JSON output: {}", json);
+                    info!("JSON output: {}", json);
                 }
                 if let Some(md) = result.markdown_path {
-                    println!("Markdown output: {}", md);
+                    info!("Markdown output: {}", md);
                 }
             } else {
-                println!("Conversion failed!");
+                error!("Conversion failed!");
                 if let Some(err) = result.error {
-                    println!("Error: {}", err);
+                    error!("Error: {}", err);
                 }
             }
         }

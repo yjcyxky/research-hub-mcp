@@ -48,6 +48,15 @@ pub struct DownloadInput {
     /// Desired output format. `pdf` keeps existing behavior, `markdown` will run pdf2text after download.
     #[serde(default)]
     pub output_format: DownloadOutputFormat,
+    /// Whether to run browser in headless mode (default: true)
+    #[serde(default = "default_headless")]
+    #[schemars(description = "Run browser in headless mode (default: true)")]
+    pub headless: bool,
+}
+
+/// Default for headless mode
+const fn default_headless() -> bool {
+    true
 }
 
 /// Output format for downloaded content
@@ -107,6 +116,8 @@ pub enum DownloadStatus {
     Paused,
     /// Download was cancelled
     Cancelled,
+    /// Download skipped (file already exists)
+    Skipped,
 }
 
 /// Result of a download operation
@@ -494,42 +505,68 @@ impl DownloadTool {
         // Check for existing file
         debug!("🔍 Checking for existing file at: {:?}", file_path);
         if file_path.exists() && !input.overwrite {
-            debug!("📄 File already exists, checking integrity verification setting");
-            if input.verify_integrity {
-                debug!("🔐 Calculating hash for existing file verification");
-                if let Ok(hash) = self.calculate_file_hash(&file_path).await {
-                    let file_size = tokio::fs::metadata(&file_path).await?.len();
-                    debug!(
-                        "✅ Existing file verified - size: {} bytes, hash: {}",
-                        file_size,
-                        &hash[..16]
+            debug!("📄 File already exists, checking file size and integrity");
+            let file_metadata = tokio::fs::metadata(&file_path).await?;
+            let file_size = file_metadata.len();
+
+            // Minimum valid PDF size check (a minimal PDF is typically at least 1KB)
+            const MIN_VALID_PDF_SIZE: u64 = 1024;
+
+            if file_size >= MIN_VALID_PDF_SIZE {
+                if input.verify_integrity {
+                    debug!("🔐 Calculating hash for existing file verification");
+                    if let Ok(hash) = self.calculate_file_hash(&file_path).await {
+                        debug!(
+                            "✅ Existing file verified - size: {} bytes, hash: {}",
+                            file_size,
+                            &hash[..16]
+                        );
+                        info!(
+                            "⏭️ Skipping download - file already exists and verified: {:?} ({} bytes)",
+                            file_path, file_size
+                        );
+                        return Ok(DownloadResult {
+                            download_id: download_id.to_string(),
+                            status: DownloadStatus::Skipped,
+                            file_path: Some(file_path),
+                            markdown_path: None,
+                            file_size: Some(file_size),
+                            sha256_hash: Some(hash),
+                            duration_seconds: 0.0,
+                            average_speed: 0,
+                            metadata,
+                            used_plugin: None,
+                            post_process_error: None,
+                            error: Some("File already exists - skipped".to_string()),
+                        });
+                    }
+                    debug!("⚠️ Failed to verify existing file hash, will re-download");
+                } else {
+                    // No integrity verification needed, just check size
+                    info!(
+                        "⏭️ Skipping download - file already exists: {:?} ({} bytes)",
+                        file_path, file_size
                     );
-                    info!("File already exists and verified: {:?}", file_path);
                     return Ok(DownloadResult {
                         download_id: download_id.to_string(),
-                        status: DownloadStatus::Completed,
+                        status: DownloadStatus::Skipped,
                         file_path: Some(file_path),
                         markdown_path: None,
                         file_size: Some(file_size),
-                        sha256_hash: Some(hash),
+                        sha256_hash: None,
                         duration_seconds: 0.0,
                         average_speed: 0,
                         metadata,
                         used_plugin: None,
                         post_process_error: None,
-                        error: None,
+                        error: Some("File already exists - skipped".to_string()),
                     });
                 }
-                debug!("⚠️ Failed to verify existing file hash");
             } else {
-                debug!("❌ File exists and overwrite not enabled");
-                return Err(crate::Error::InvalidInput {
-                    field: "file_path".to_string(),
-                    reason: format!(
-                        "File already exists: {file_path}",
-                        file_path = file_path.display()
-                    ),
-                });
+                debug!(
+                    "⚠️ Existing file too small ({} bytes < {} min), will re-download",
+                    file_size, MIN_VALID_PDF_SIZE
+                );
             }
         } else if file_path.exists() {
             debug!("📄 File exists but overwrite is enabled - will replace");
@@ -724,14 +761,38 @@ impl DownloadTool {
         let doi_clone = doi.clone();
         let output_dir_clone = output_dir.clone();
         let filename_clone = filename.clone();
+        let headless = input.headless;
+
+        // Check whether the file already exists
+        if target_path.exists() {
+            info!("File already exists: {}", target_path.display());
+            let file_size = tokio::fs::metadata(&target_path)
+                .await
+                .ok()
+                .map(|m| m.len());
+            return Ok(Some(DownloadResult {
+                download_id: uuid::Uuid::new_v4().to_string(),
+                status: DownloadStatus::Completed,
+                file_path: Some(target_path),
+                markdown_path: None,
+                file_size,
+                sha256_hash: None,
+                duration_seconds: 0.0,
+                average_speed: 0,
+                metadata: None,
+                used_plugin: None,
+                post_process_error: None,
+                error: None,
+            }));
+        }
 
         let pyo3_result = tokio::task::spawn_blocking(move || {
             crate::python_embed::run_plugin_download(
                 &doi_clone,
                 &output_dir_clone,
                 filename_clone.as_deref(),
-                5.0,  // wait_time
-                true, // headless
+                5.0, // wait_time
+                headless,
             )
         })
         .await
@@ -883,10 +944,19 @@ impl DownloadTool {
                 Ok(Ok((request, download_result))) => {
                     match download_result {
                         Ok(result) => {
-                            // Successful download
-                            summary_stats.successful += 1;
-                            if let Some(size) = result.file_size {
-                                summary_stats.total_bytes += size;
+                            // Check if this was a skipped download (file already exists)
+                            if matches!(result.status, DownloadStatus::Skipped) {
+                                summary_stats.skipped += 1;
+                                info!(
+                                    "⏭️ Skipped existing file: {:?}",
+                                    result.file_path.as_ref().map(|p| p.display().to_string())
+                                );
+                            } else {
+                                // Successful download
+                                summary_stats.successful += 1;
+                                if let Some(size) = result.file_size {
+                                    summary_stats.total_bytes += size;
+                                }
                             }
 
                             results.push(BatchDownloadItemResult {
@@ -1124,6 +1194,7 @@ impl DownloadTool {
             overwrite: shared_settings.overwrite,
             verify_integrity: shared_settings.verify_integrity,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true, // Batch downloads always use headless mode
         })
     }
 
@@ -2545,6 +2616,7 @@ mod tests {
             overwrite: false,
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
         };
         assert!(DownloadTool::validate_input(&empty_input).is_err());
 
@@ -2558,6 +2630,7 @@ mod tests {
             overwrite: false,
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
         };
         assert!(DownloadTool::validate_input(&both_input).is_err());
 
@@ -2571,6 +2644,7 @@ mod tests {
             overwrite: false,
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
         };
         assert!(DownloadTool::validate_input(&valid_doi).is_ok());
 
@@ -2584,6 +2658,7 @@ mod tests {
             overwrite: false,
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
         };
         assert!(DownloadTool::validate_input(&valid_url).is_ok());
 
@@ -2597,6 +2672,7 @@ mod tests {
             overwrite: false,
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
         };
         assert!(DownloadTool::validate_input(&invalid_filename).is_err());
     }
@@ -2647,6 +2723,7 @@ mod tests {
             overwrite: false,
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
         };
 
         let metadata = Some(PaperMetadata::new("10.1038/test".to_string()));
@@ -2711,6 +2788,7 @@ mod tests {
             overwrite: false,
             verify_integrity: false,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
         };
 
         let metadata = PaperMetadata::new("10.1038/test".to_string());
@@ -2980,6 +3058,7 @@ mod tests {
             overwrite: false,
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
         };
 
         let result = DownloadTool::validate_input(&both_input);
@@ -2998,6 +3077,7 @@ mod tests {
             overwrite: false,
             verify_integrity: true,
             output_format: DownloadOutputFormat::Pdf,
+            headless: true,
         };
 
         let result_neither = DownloadTool::validate_input(&neither_input);

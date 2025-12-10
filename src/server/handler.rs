@@ -471,6 +471,7 @@ impl ServerHandler for ResearchServerHandler {
                         overwrite: false,
                         verify_integrity: true,
                         output_format,
+                        headless: true,
                     };
 
                     debug!("Attempting download with input: {:?}", input);
