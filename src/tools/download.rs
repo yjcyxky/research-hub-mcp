@@ -589,7 +589,7 @@ impl DownloadTool {
         let cleanup_path = file_path.clone();
 
         match self
-            .execute_download(
+            .execute_download_by_cdp(
                 download_id.to_string(),
                 download_url,
                 file_path,
@@ -1906,6 +1906,185 @@ impl DownloadTool {
                     std::any::type_name_of_val(&e)
                 );
                 Err(e)
+            }
+        }
+    }
+
+    /// Execute download using CDP (Chrome DevTools Protocol) via Playwright.
+    /// This method has the same interface as `execute_download` for seamless switching.
+    async fn execute_download_by_cdp(
+        &self,
+        download_id: String,
+        download_url: String,
+        file_path: PathBuf,
+        metadata: Option<PaperMetadata>,
+        verify_integrity: bool,
+    ) -> Result<DownloadResult> {
+        debug!("🚀 Execute download by CDP called with ID: {}", download_id);
+        debug!("🔗 Download URL validation");
+
+        // Validate that the URL is not empty
+        if download_url.is_empty() {
+            debug!("❌ Download URL is empty - this should not happen");
+            return Err(crate::Error::InvalidInput {
+                field: "download_url".to_string(),
+                reason: "Download URL cannot be empty".to_string(),
+            });
+        }
+        debug!(
+            "✅ URL validation passed - length: {} chars",
+            download_url.len()
+        );
+
+        let start_time = SystemTime::now();
+        debug!("⏱️ Download timer started at: {:?}", start_time);
+
+        info!("Starting CDP download: {} -> {:?}", download_url, file_path);
+        debug!("📁 Target file: {:?}", file_path);
+        debug!("🔐 Integrity verification: {}", verify_integrity);
+        debug!("📄 Metadata available: {}", metadata.is_some());
+
+        // Create initial progress state
+        debug!("📊 Creating initial progress state");
+        let mut progress = Self::create_initial_progress(
+            download_id.clone(),
+            download_url.clone(),
+            file_path.clone(),
+        );
+        debug!("📊 Progress state created - status: {:?}", progress.status);
+
+        // Send initial progress
+        debug!("📡 Sending initial progress notification");
+        self.send_progress(progress.clone());
+
+        // Check if PyO3/Python is available
+        if let Err(e) = crate::python_embed::check_python_available() {
+            debug!("❌ Python runtime not available: {}", e);
+            return Err(crate::Error::Service(format!(
+                "Python runtime not available for CDP download: {e}"
+            )));
+        }
+
+        // Ensure parent directory exists
+        if let Some(parent) = file_path.parent() {
+            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                debug!("❌ Failed to create parent directory: {}", e);
+                return Err(crate::Error::Service(format!(
+                    "Failed to create directory: {e}"
+                )));
+            }
+        }
+
+        // Run the CDP download in a blocking task since PyO3 operations are synchronous
+        let download_url_clone = download_url.clone();
+        let file_path_clone = file_path.clone();
+        let headless = true; // Default to headless for CDP downloads
+        let timeout = 60000u64; // 60 seconds
+        let wait_time = 5.0f64; // 5 seconds wait time
+
+        debug!("🐍 Calling Python CDP download function");
+        let result = tokio::task::spawn_blocking(move || {
+            crate::python_embed::run_cdp_download(
+                &download_url_clone,
+                &file_path_clone,
+                headless,
+                timeout,
+                wait_time,
+            )
+        })
+        .await
+        .map_err(|e| crate::Error::Service(format!("Task join error: {e}")))?;
+
+        match result {
+            Ok(plugin_result) => {
+                if plugin_result.success {
+                    debug!("✅ CDP download completed successfully");
+                    
+                    // Get file size
+                    let file_size = if file_path.exists() {
+                        match tokio::fs::metadata(&file_path).await {
+                            Ok(meta) => meta.len(),
+                            Err(e) => {
+                                debug!("⚠️ Could not get file metadata: {}", e);
+                                plugin_result.file_size
+                            }
+                        }
+                    } else {
+                        debug!("⚠️ File does not exist after download");
+                        return Err(crate::Error::Service(
+                            "File was not created by CDP download".to_string(),
+                        ));
+                    };
+
+                    debug!("📊 File size: {} bytes ({:.2} MB)", file_size, file_size as f64 / 1_048_576.0);
+
+                    // Update progress
+                    progress.downloaded = file_size;
+                    progress.total_size = Some(file_size);
+                    progress.percentage = 100.0;
+                    progress.status = DownloadStatus::Completed;
+                    self.send_progress(progress.clone());
+
+                    // Calculate duration
+                    let duration = start_time.elapsed().unwrap_or(Duration::ZERO);
+                    let duration_seconds = duration.as_secs_f64();
+                    let average_speed = if duration.as_secs() > 0 {
+                        file_size / duration.as_secs()
+                    } else {
+                        0
+                    };
+
+                    // Verify integrity if requested
+                    let sha256_hash = if verify_integrity {
+                        debug!("🔐 Calculating file hash for integrity verification");
+                        match self.calculate_file_hash(&file_path).await {
+                            Ok(hash) => {
+                                debug!("✅ File hash calculated: {}", hash);
+                                Some(hash)
+                            }
+                            Err(e) => {
+                                debug!("❌ Failed to calculate file hash: {}", e);
+                                return Err(e);
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
+                    debug!("📊 Download stats - size: {} bytes, duration: {:.2}s, speed: {} bytes/s",
+                           file_size, duration_seconds, average_speed);
+
+                    Ok(DownloadResult {
+                        download_id,
+                        status: DownloadStatus::Completed,
+                        file_path: Some(file_path),
+                        markdown_path: None,
+                        file_size: Some(file_size),
+                        sha256_hash,
+                        duration_seconds,
+                        average_speed,
+                        metadata,
+                        used_plugin: Some("cdp".to_string()),
+                        post_process_error: None,
+                        error: None,
+                    })
+                } else {
+                    let error_msg = plugin_result.error.unwrap_or_else(|| {
+                        "CDP download failed with unknown error".to_string()
+                    });
+                    debug!("❌ CDP download failed: {}", error_msg);
+                    progress.status = DownloadStatus::Failed;
+                    progress.error = Some(error_msg.clone());
+                    self.send_progress(progress);
+                    Err(crate::Error::Service(error_msg))
+                }
+            }
+            Err(e) => {
+                debug!("❌ CDP download error: {}", e);
+                progress.status = DownloadStatus::Failed;
+                progress.error = Some(e.clone());
+                self.send_progress(progress);
+                Err(crate::Error::Service(e))
             }
         }
     }

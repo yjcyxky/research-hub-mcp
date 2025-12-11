@@ -1,24 +1,37 @@
 //! Python embedding module for executing embedded Python code via PyO3.
 //!
 //! This module embeds the `plugins/` and `pdf2text/` Python sources at compile time
-//! using `include_dir!` and provides functions to execute them using `Python::with_gil()`
-//! and `PyModule::from_code()`.
-//!
-//! Python files are automatically discovered and loaded in dependency order.
+//! using `include_dir!` and extracts them to a temporary directory at runtime.
+//! Python's standard import mechanism handles all dependency resolution automatically.
 
 use include_dir::{include_dir, Dir};
+use once_cell::sync::Lazy;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyModule};
-use std::collections::{HashMap, HashSet};
-use std::ffi::CString;
-use std::path::Path;
-use tracing::warn;
+use pyo3::types::PyDict;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Embedded plugins directory - all .py files are included at compile time
 static PLUGINS_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/plugins");
 
 /// Embedded pdf2text directory - all .py files are included at compile time
 static PDF2TEXT_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/pdf2text");
+
+/// Track if Python path has been initialized
+static PYTHON_PATH_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Base directory for extracted Python modules
+static PYTHON_LIB_PATH: Lazy<PathBuf> = Lazy::new(|| {
+    let base = std::env::temp_dir().join("rust-research-mcp-python");
+
+    // Extract both directories
+    extract_embedded_dir(&PLUGINS_DIR, &base.join("plugins"));
+    extract_embedded_dir(&PDF2TEXT_DIR, &base.join("pdf2text"));
+
+    tracing::debug!("Extracted Python modules to: {}", base.display());
+    base
+});
 
 /// Result of a plugin download operation
 #[derive(Debug, Clone)]
@@ -40,239 +53,51 @@ pub struct Pdf2TextResult {
     pub error: Option<String>,
 }
 
-/// Extract module dependencies from Python source code.
-/// Looks for `from package.module import ...` and `import package.module` patterns.
-fn extract_dependencies(source: &str, package_name: &str) -> Vec<String> {
-    let mut deps = Vec::new();
-
-    for line in source.lines() {
-        let trimmed = line.trim();
-
-        // Handle: from .module import ... or from package.module import ...
-        if trimmed.starts_with("from ") {
-            if let Some(rest) = trimmed.strip_prefix("from ") {
-                // Handle relative imports: from .module import ...
-                if rest.starts_with('.') {
-                    if let Some(module_part) = rest.strip_prefix('.') {
-                        if let Some(module) = module_part.split_whitespace().next() {
-                            if !module.is_empty() && module != "import" {
-                                deps.push(format!("{}.{}", package_name, module));
-                            }
-                        }
-                    }
-                }
-                // Handle absolute imports: from package.module import ...
-                else if rest.starts_with(package_name) {
-                    if let Some(import_part) = rest.split_whitespace().next() {
-                        if import_part.contains('.') {
-                            // Extract just the module path before 'import'
-                            let module_path =
-                                import_part.split(" import").next().unwrap_or(import_part);
-                            deps.push(module_path.to_string());
-                        }
-                    }
-                }
-            }
-        }
-        // Handle: import package.module
-        else if trimmed.starts_with("import ") {
-            if let Some(rest) = trimmed.strip_prefix("import ") {
-                for module in rest.split(',') {
-                    let module = module.trim().split_whitespace().next().unwrap_or("");
-                    if module.starts_with(package_name) && module.contains('.') {
-                        deps.push(module.to_string());
-                    }
-                }
-            }
-        }
+/// Recursively extract an embedded directory to the filesystem.
+fn extract_embedded_dir(dir: &Dir<'_>, target: &Path) {
+    // Create target directory
+    if let Err(e) = fs::create_dir_all(target) {
+        tracing::warn!("Failed to create directory {}: {}", target.display(), e);
+        return;
     }
 
-    deps
-}
-
-/// Topological sort for module loading order.
-/// Returns modules in order where dependencies come before dependents.
-fn topological_sort(modules: &HashMap<String, String>, package_name: &str) -> Vec<String> {
-    let mut deps_map: HashMap<String, Vec<String>> = HashMap::new();
-
-    // Build dependency graph
-    for (name, source) in modules {
-        let deps = extract_dependencies(source, package_name);
-        deps_map.insert(name.clone(), deps);
-    }
-
-    let mut result = Vec::new();
-    let mut visited = HashSet::new();
-    let mut temp_visited = HashSet::new();
-
-    fn visit(
-        node: &str,
-        deps_map: &HashMap<String, Vec<String>>,
-        visited: &mut HashSet<String>,
-        temp_visited: &mut HashSet<String>,
-        result: &mut Vec<String>,
-        modules: &HashMap<String, String>,
-    ) {
-        if visited.contains(node) {
-            return;
-        }
-        if temp_visited.contains(node) {
-            // Circular dependency - just skip
-            return;
-        }
-
-        temp_visited.insert(node.to_string());
-
-        if let Some(deps) = deps_map.get(node) {
-            for dep in deps {
-                // Only visit if it's a module we're loading
-                if modules.contains_key(dep) {
-                    visit(dep, deps_map, visited, temp_visited, result, modules);
-                }
-            }
-        }
-
-        temp_visited.remove(node);
-        visited.insert(node.to_string());
-        result.push(node.to_string());
-    }
-
-    for name in modules.keys() {
-        visit(
-            name,
-            &deps_map,
-            &mut visited,
-            &mut temp_visited,
-            &mut result,
-            modules,
-        );
-    }
-
-    result
-}
-
-/// Load all Python files from an embedded directory into a package.
-fn load_package_modules(
-    py: Python<'_>,
-    dir: &Dir<'_>,
-    package_name: &str,
-    modules: &pyo3::Bound<'_, PyDict>,
-) -> PyResult<()> {
-    // Collect all .py files with their contents
-    let mut py_modules: HashMap<String, String> = HashMap::new();
-
+    // Extract all files
     for file in dir.files() {
-        let path = file.path();
-        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-        if !filename.ends_with(".py") {
-            continue;
-        }
-
-        let content = file.contents_utf8().unwrap_or("");
-        let module_name = filename.strip_suffix(".py").unwrap_or(filename);
-
-        let full_module_name = if module_name == "__init__" {
-            package_name.to_string()
-        } else {
-            format!("{}.{}", package_name, module_name)
-        };
-
-        py_modules.insert(full_module_name, content.to_string());
-    }
-
-    // Create the package first with proper __path__ attribute
-    // This is critical for relative imports to work
-    let package_init = py_modules.get(package_name).cloned().unwrap_or_default();
-    let init_code = format!(
-        "__path__ = []\n__package__ = '{}'\n{}",
-        package_name, package_init
-    );
-
-    // We need to register non-__init__ modules first (in dependency order),
-    // then execute __init__.py which may import them
-
-    // Get modules sorted by dependencies (excluding __init__)
-    let mut non_init_modules: HashMap<String, String> = py_modules
-        .iter()
-        .filter(|(k, _)| *k != package_name)
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-
-    let sorted_modules = topological_sort(&non_init_modules, package_name);
-
-    // First, create a minimal package entry so submodule imports can find the package
-    let minimal_init = PyModule::from_code(
-        py,
-        &CString::new(format!("__path__ = []\n__package__ = '{}'", package_name)).unwrap(),
-        &CString::new(format!("{}/__init__.py", package_name)).unwrap(),
-        &CString::new(package_name).unwrap(),
-    )?;
-    modules.set_item(package_name, &minimal_init)?;
-
-    // Load modules in dependency order
-    for module_name in &sorted_modules {
-        if let Some(source) = non_init_modules.remove(module_name) {
-            let file_path = format!(
-                "{}/{}.py",
-                package_name,
-                module_name
-                    .strip_prefix(&format!("{}.", package_name))
-                    .unwrap_or(module_name)
-            );
-
-            let module = PyModule::from_code(
-                py,
-                &CString::new(source).unwrap(),
-                &CString::new(file_path).unwrap(),
-                &CString::new(module_name.as_str()).unwrap(),
-            )?;
-            modules.set_item(module_name.as_str(), &module)?;
-
-            // Also set as attribute on package for attribute access
-            let attr_name = module_name
-                .strip_prefix(&format!("{}.", package_name))
-                .unwrap_or(module_name);
-            minimal_init.setattr(attr_name, &module)?;
+        if let Some(filename) = file.path().file_name() {
+            let dest = target.join(filename);
+            if let Err(e) = fs::write(&dest, file.contents()) {
+                tracing::warn!("Failed to write {}: {}", dest.display(), e);
+            }
         }
     }
 
-    // Now load the full __init__.py with all imports
-    // This will find all the submodules already registered
-    if py_modules.contains_key(package_name) {
-        let full_init = PyModule::from_code(
-            py,
-            &CString::new(init_code).unwrap(),
-            &CString::new(format!("{}/__init__.py", package_name)).unwrap(),
-            &CString::new(package_name).unwrap(),
-        )?;
-        modules.set_item(package_name, &full_init)?;
+    // Recursively extract subdirectories
+    for subdir in dir.dirs() {
+        if let Some(name) = subdir.path().file_name() {
+            extract_embedded_dir(subdir, &target.join(name));
+        }
+    }
+}
+
+/// Initialize Python path to include extracted modules.
+/// This only needs to be called once per process.
+fn init_python_path(py: Python<'_>) -> PyResult<()> {
+    // Check if already initialized
+    if PYTHON_PATH_INITIALIZED.load(Ordering::SeqCst) {
+        return Ok(());
     }
 
-    Ok(())
-}
+    // Force extraction by accessing the lazy static
+    let lib_path = PYTHON_LIB_PATH.to_string_lossy().to_string();
 
-/// Initialize the embedded plugins Python modules.
-///
-/// This function registers all Python sources from the plugins/ directory
-/// as importable modules so they can be used by subsequent code.
-fn init_plugin_modules(py: Python<'_>) -> PyResult<()> {
     let sys = py.import("sys")?;
-    let modules_attr = sys.getattr("modules")?;
-    let modules = modules_attr.downcast::<PyDict>()?;
+    let path = sys.getattr("path")?;
 
-    load_package_modules(py, &PLUGINS_DIR, "plugins", modules)?;
+    // Insert at beginning so our modules take precedence
+    path.call_method1("insert", (0, &lib_path))?;
 
-    Ok(())
-}
-
-/// Initialize the pdf2text Python modules.
-fn init_pdf2text_modules(py: Python<'_>) -> PyResult<()> {
-    let sys = py.import("sys")?;
-    let modules_attr = sys.getattr("modules")?;
-    let modules = modules_attr.downcast::<PyDict>()?;
-
-    load_package_modules(py, &PDF2TEXT_DIR, "pdf2text", modules)?;
+    PYTHON_PATH_INITIALIZED.store(true, Ordering::SeqCst);
+    tracing::debug!("Python path initialized with: {}", lib_path);
 
     Ok(())
 }
@@ -288,24 +113,13 @@ pub fn run_plugin_download(
     headless: bool,
 ) -> Result<PluginDownloadResult, String> {
     Python::with_gil(|py| {
-        // Initialize modules
-        init_plugin_modules(py).map_err(|e| format!("Failed to init plugin modules: {e}"))?;
+        // Initialize Python path
+        init_python_path(py).map_err(|e| format!("Failed to init Python path: {e}"))?;
 
-        // Get the utils module
-        let sys = py
-            .import("sys")
-            .map_err(|e| format!("Failed to import sys: {e}"))?;
-        let modules = sys
-            .getattr("modules")
-            .map_err(|e| format!("Failed to get modules: {e}"))?;
-        let modules = modules
-            .downcast::<PyDict>()
-            .map_err(|e| format!("modules is not a dict: {e}"))?;
-
-        let utils = modules
-            .get_item("plugins.utils")
-            .map_err(|e| format!("Failed to get plugins.utils: {e}"))?
-            .ok_or_else(|| "plugins.utils not found in sys.modules".to_string())?;
+        // Import using standard Python import mechanism
+        let plugins_utils = py
+            .import("plugins.utils")
+            .map_err(|e| format!("Failed to import plugins.utils: {e}"))?;
 
         // Import asyncio to run async function
         let asyncio = py
@@ -316,36 +130,26 @@ pub fn run_plugin_download(
         let output_dir_str = output_dir.to_string_lossy().to_string();
         let plugin_options = PyDict::new(py);
         let opts = PyDict::new(py);
-        // TODO: We need a better way to pass options to the plugins
         opts.set_item("headless", headless)
             .map_err(|e| format!("Failed to set headless: {e}"))?;
-        plugin_options
-            .set_item("wiley", opts.clone())
-            .map_err(|e| format!("Failed to set wiley opts: {e}"))?;
-        plugin_options
-            .set_item("oxford", opts.clone())
-            .map_err(|e| format!("Failed to set oxford opts: {e}"))?;
-        plugin_options
-            .set_item("springer", opts.clone())
-            .map_err(|e| format!("Failed to set springer opts: {e}"))?;
-        plugin_options
-            .set_item("biorxiv", opts.clone())
-            .map_err(|e| format!("Failed to set biorxiv opts: {e}"))?;
-        plugin_options
-            .set_item("mdpi", opts.clone())
-            .map_err(|e| format!("Failed to set mdpi opts: {e}"))?;
-        plugin_options
-            .set_item("frontiers", opts.clone())
-            .map_err(|e| format!("Failed to set frontiers opts: {e}"))?;
-        plugin_options
-            .set_item("pnas", opts.clone())
-            .map_err(|e| format!("Failed to set pnas opts: {e}"))?;
-        plugin_options
-            .set_item("plos", opts.clone())
-            .map_err(|e| format!("Failed to set plos opts: {e}"))?;
-        plugin_options
-            .set_item("hindawi", opts.clone())
-            .map_err(|e| format!("Failed to set hindawi opts: {e}"))?;
+
+        // Set options for all plugins
+        for plugin_name in &[
+            "wiley",
+            "oxford",
+            "springer",
+            "biorxiv",
+            "mdpi",
+            "frontiers",
+            "pnas",
+            "plos",
+            "hindawi",
+            "nature",
+        ] {
+            plugin_options
+                .set_item(*plugin_name, opts.clone())
+                .map_err(|e| format!("Failed to set {plugin_name} opts: {e}"))?;
+        }
 
         // Build kwargs
         let kwargs = PyDict::new(py);
@@ -368,7 +172,7 @@ pub fn run_plugin_download(
             .map_err(|e| format!("Failed to set plugin_options: {e}"))?;
 
         // Call the async function via asyncio.run()
-        let download_fn = utils
+        let download_fn = plugins_utils
             .getattr("download_with_detected_plugin")
             .map_err(|e| format!("Failed to get download_with_detected_plugin: {e}"))?;
 
@@ -381,53 +185,7 @@ pub fn run_plugin_download(
             .map_err(|e| format!("Failed to run coroutine: {e}"))?;
 
         // Extract result fields
-        let success: bool = result
-            .getattr("success")
-            .and_then(|v| v.extract())
-            .unwrap_or(false);
-
-        let file_path: Option<String> = result.getattr("file_path").ok().and_then(|v| {
-            if v.is_none() {
-                None
-            } else {
-                v.str().ok().map(|s| s.to_string())
-            }
-        });
-
-        let file_size: u64 = result
-            .getattr("file_size")
-            .and_then(|v| v.extract())
-            .unwrap_or(0);
-
-        let error: Option<String> = result.getattr("error").ok().and_then(|v| {
-            if v.is_none() {
-                None
-            } else {
-                v.extract().ok()
-            }
-        });
-
-        let publisher: Option<String> = result.getattr("publisher").ok().and_then(|v| {
-            if v.is_none() {
-                None
-            } else {
-                v.extract().ok()
-            }
-        });
-
-        let doi_out: String = result
-            .getattr("doi")
-            .and_then(|v| v.extract())
-            .unwrap_or_else(|_| doi.to_string());
-
-        Ok(PluginDownloadResult {
-            success,
-            file_path,
-            file_size,
-            error,
-            publisher,
-            doi: doi_out,
-        })
+        extract_plugin_result(&result, doi)
     })
 }
 
@@ -446,24 +204,13 @@ pub fn run_pdf2text(
     no_markdown: bool,
 ) -> Result<Pdf2TextResult, String> {
     Python::with_gil(|py| {
-        // Initialize modules
-        init_pdf2text_modules(py).map_err(|e| format!("Failed to init pdf2text modules: {e}"))?;
+        // Initialize Python path
+        init_python_path(py).map_err(|e| format!("Failed to init Python path: {e}"))?;
 
-        // Get the pdf2text module
-        let sys = py
-            .import("sys")
-            .map_err(|e| format!("Failed to import sys: {e}"))?;
-        let modules = sys
-            .getattr("modules")
-            .map_err(|e| format!("Failed to get modules: {e}"))?;
-        let modules = modules
-            .downcast::<PyDict>()
-            .map_err(|e| format!("modules is not a dict: {e}"))?;
-
-        let pdf2text = modules
-            .get_item("pdf2text.pdf2text")
-            .map_err(|e| format!("Failed to get pdf2text.pdf2text: {e}"))?
-            .ok_or_else(|| "pdf2text.pdf2text not found in sys.modules".to_string())?;
+        // Import using standard Python import mechanism
+        let pdf2text_module = py
+            .import("pdf2text.pdf2text")
+            .map_err(|e| format!("Failed to import pdf2text.pdf2text: {e}"))?;
 
         // Prepare arguments
         let pdf_file_str = pdf_file.to_string_lossy().to_string();
@@ -503,7 +250,7 @@ pub fn run_pdf2text(
             .map_err(|e| format!("Failed to set extract_tables: {e}"))?;
 
         // Call extract_fulltext
-        let extract_fn = pdf2text
+        let extract_fn = pdf2text_module
             .getattr("extract_fulltext")
             .map_err(|e| format!("Failed to get extract_fulltext: {e}"))?;
 
@@ -549,6 +296,126 @@ pub fn run_pdf2text(
     })
 }
 
+/// Run CDP-based download using Playwright.
+///
+/// This function calls the Python `execute_download_by_cdp` function from plugins.utils.
+pub fn run_cdp_download(
+    url: &str,
+    output_file: &Path,
+    headless: bool,
+    timeout: u64,
+    wait_time: f64,
+) -> Result<PluginDownloadResult, String> {
+    Python::with_gil(|py| {
+        // Initialize Python path
+        init_python_path(py).map_err(|e| format!("Failed to init Python path: {e}"))?;
+
+        // Import using standard Python import mechanism
+        let plugins_utils = py
+            .import("plugins.utils")
+            .map_err(|e| format!("Failed to import plugins.utils: {e}"))?;
+
+        // Import asyncio to run async function
+        let asyncio = py
+            .import("asyncio")
+            .map_err(|e| format!("Failed to import asyncio: {e}"))?;
+
+        // Prepare arguments
+        let output_file_str = output_file.to_string_lossy().to_string();
+
+        // Build kwargs
+        let kwargs = PyDict::new(py);
+        kwargs
+            .set_item("url", url)
+            .map_err(|e| format!("Failed to set url: {e}"))?;
+        kwargs
+            .set_item("output_file", &output_file_str)
+            .map_err(|e| format!("Failed to set output_file: {e}"))?;
+        kwargs
+            .set_item("headless", headless)
+            .map_err(|e| format!("Failed to set headless: {e}"))?;
+        kwargs
+            .set_item("timeout", timeout)
+            .map_err(|e| format!("Failed to set timeout: {e}"))?;
+        kwargs
+            .set_item("wait_time", wait_time)
+            .map_err(|e| format!("Failed to set wait_time: {e}"))?;
+
+        // Call the async function via asyncio.run()
+        let download_fn = plugins_utils
+            .getattr("execute_download_by_cdp")
+            .map_err(|e| format!("Failed to get execute_download_by_cdp: {e}"))?;
+
+        let coro = download_fn
+            .call((), Some(&kwargs))
+            .map_err(|e| format!("Failed to create coroutine: {e}"))?;
+
+        let result = asyncio
+            .call_method1("run", (coro,))
+            .map_err(|e| format!("Failed to run coroutine: {e}"))?;
+
+        // Extract result fields
+        let mut plugin_result = extract_plugin_result(&result, "")?;
+        plugin_result.publisher = None;
+        plugin_result.doi = String::new();
+        Ok(plugin_result)
+    })
+}
+
+/// Extract plugin download result from Python object.
+fn extract_plugin_result(
+    result: &Bound<'_, PyAny>,
+    doi: &str,
+) -> Result<PluginDownloadResult, String> {
+    let success: bool = result
+        .getattr("success")
+        .and_then(|v| v.extract())
+        .unwrap_or(false);
+
+    let file_path: Option<String> = result.getattr("file_path").ok().and_then(|v| {
+        if v.is_none() {
+            None
+        } else {
+            v.str().ok().map(|s| s.to_string())
+        }
+    });
+
+    let file_size: u64 = result
+        .getattr("file_size")
+        .and_then(|v| v.extract())
+        .unwrap_or(0);
+
+    let error: Option<String> = result.getattr("error").ok().and_then(|v| {
+        if v.is_none() {
+            None
+        } else {
+            v.extract().ok()
+        }
+    });
+
+    let publisher: Option<String> = result.getattr("publisher").ok().and_then(|v| {
+        if v.is_none() {
+            None
+        } else {
+            v.extract().ok()
+        }
+    });
+
+    let doi_out: String = result
+        .getattr("doi")
+        .and_then(|v| v.extract())
+        .unwrap_or_else(|_| doi.to_string());
+
+    Ok(PluginDownloadResult {
+        success,
+        file_path,
+        file_size,
+        error,
+        publisher,
+        doi: doi_out,
+    })
+}
+
 /// Check if Python is available and properly configured.
 pub fn check_python_available() -> Result<String, String> {
     Python::with_gil(|py| {
@@ -561,6 +428,12 @@ pub fn check_python_available() -> Result<String, String> {
             .map_err(|e| format!("Failed to get Python version: {e}"))?;
         Ok(version)
     })
+}
+
+/// Get the path where Python modules are extracted.
+/// Useful for debugging.
+pub fn get_python_lib_path() -> PathBuf {
+    PYTHON_LIB_PATH.clone()
 }
 
 #[cfg(test)]
@@ -580,15 +453,43 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_dependencies() {
-        let source = r#"
-from plugins.common import BasePlugin
-from .utils import something
-import plugins.wiley_pdf_downloader
-"#;
-        let deps = extract_dependencies(source, "plugins");
-        assert!(deps.contains(&"plugins.common".to_string()));
-        assert!(deps.contains(&"plugins.utils".to_string()));
-        assert!(deps.contains(&"plugins.wiley_pdf_downloader".to_string()));
+    fn test_python_lib_path_exists() {
+        let path = get_python_lib_path();
+        // Force extraction
+        Python::with_gil(|py| {
+            init_python_path(py).expect("Failed to init Python path");
+        });
+        assert!(path.exists(), "Python lib path should exist: {:?}", path);
+        assert!(
+            path.join("plugins").exists(),
+            "plugins directory should exist"
+        );
+        assert!(
+            path.join("pdf2text").exists(),
+            "pdf2text directory should exist"
+        );
+    }
+
+    #[test]
+    fn test_can_import_plugins() {
+        Python::with_gil(|py| {
+            init_python_path(py).expect("Failed to init Python path");
+
+            // Test that we can import the plugins module
+            let result = py.import("plugins");
+            assert!(
+                result.is_ok(),
+                "Should be able to import plugins: {:?}",
+                result.err()
+            );
+
+            // Test that we can import plugins.utils
+            let result = py.import("plugins.utils");
+            assert!(
+                result.is_ok(),
+                "Should be able to import plugins.utils: {:?}",
+                result.err()
+            );
+        });
     }
 }

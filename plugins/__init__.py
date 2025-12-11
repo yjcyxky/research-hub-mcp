@@ -1,17 +1,17 @@
 """Research Hub MCP Plugins."""
 
-from .biorxiv_pdf_downloader import BioRxivPDFDownloader
+from .downloader.biorxiv_pdf_downloader import BioRxivPDFDownloader
 from .common import BasePlugin, DownloadResult
-from .frontiers_pdf_downloader import FrontiersPDFDownloader
-from .hindawi_pdf_downloader import HindawiPDFDownloader
-from .mdpi_pdf_downloader import MDPIPDFDownloader
-from .nature_pdf_downloader import NaturePDFDownloader
-from .oxford_pdf_downloader import OxfordPDFDownloader
-from .plos_pdf_downloader import PLOSPDFDownloader
-from .pnas_pdf_downloader import PNASPDFDownloader
-from .springer_pdf_downloader import SpringerPDFDownloader
+from .downloader.frontiers_pdf_downloader import FrontiersPDFDownloader
+from .downloader.hindawi_pdf_downloader import HindawiPDFDownloader
+from .downloader.mdpi_pdf_downloader import MDPIPDFDownloader
+from .downloader.nature_pdf_downloader import NaturePDFDownloader
+from .downloader.oxford_pdf_downloader import OxfordPDFDownloader
+from .downloader.plos_pdf_downloader import PLOSPDFDownloader
+from .downloader.pnas_pdf_downloader import PNASPDFDownloader
+from .downloader.springer_pdf_downloader import SpringerPDFDownloader
 from .utils import PLUGIN_REGISTRY
-from .wiley_pdf_downloader import WileyPDFDownloader
+from .downloader.wiley_pdf_downloader import WileyPDFDownloader
 from .utils import (
     PublisherDetection,
     detect_publisher_patterns,

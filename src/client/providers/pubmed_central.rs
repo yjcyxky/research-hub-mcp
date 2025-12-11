@@ -251,6 +251,7 @@ impl PubMedCentralProvider {
         })?;
 
         // The PMC response includes a "uids" array plus one object per UID. Filter and deserialize objects only.
+        // The key is the PMC ID, which we need for building PDF URLs.
         let mut articles = Vec::new();
         for (key, value) in fetch_result.result {
             if key == "uids" {
@@ -258,7 +259,14 @@ impl PubMedCentralProvider {
             }
             if value.is_object() {
                 match serde_json::from_value::<PmcArticle>(value) {
-                    Ok(article) => articles.push(article),
+                    Ok(mut article) => {
+                        // Ensure uid is set to the PMC ID (key) if it's missing
+                        // This is important for building PDF URLs
+                        if article.uid.is_none() {
+                            article.uid = Some(key.clone());
+                        }
+                        articles.push(article);
+                    }
                     Err(e) => warn!("Failed to parse PMC article {}: {}", key, e),
                 }
             }
@@ -314,10 +322,44 @@ impl PubMedCentralProvider {
             .unwrap_or_default();
 
         // Build PMC URL for PDF access
-        let pdf_url = article
+        // Try multiple sources for PMC ID:
+        // 1. Direct pmc_id field
+        // 2. From article_ids array (idtype="pmc" or "pmcid")
+        // 3. From uid field (esummary.fcgi returns the PMC ID as uid)
+        let pmc_id = article
             .pmc_id
             .as_ref()
-            .map(|pmc_id| format!("https://www.ncbi.nlm.nih.gov/pmc/articles/{pmc_id}/pdf/"));
+            .or_else(|| {
+                article.article_ids.as_ref().and_then(|ids| {
+                    ids.iter()
+                        .find(|id| id.idtype == "pmc" || id.idtype == "pmcid")
+                        .map(|id| &id.value)
+                })
+            })
+            .or_else(|| article.uid.as_ref())
+            .cloned();
+
+        // Build PDF URL with robust handling for both standard and NIHMS formats
+        let pdf_url = pmc_id.filter(|id| !id.is_empty()).map(|pmc_id| {
+            // Check for NIHMS ID (Manuscript ID) which requires special URL format
+            let nihmsid = article.article_ids.as_ref().and_then(|ids| {
+                ids.iter()
+                    .find(|id| id.idtype == "MID")
+                    .map(|id| {
+                        // Clean NIHMS ID: remove "NIHMS" prefix and whitespace
+                        id.value.replace("NIHMS", "").trim().to_string()
+                    })
+                    .filter(|mid| !mid.is_empty())
+            });
+
+            if let Some(cleaned_nihmsid) = nihmsid {
+                format!(
+                    "https://pmc.ncbi.nlm.nih.gov/articles/{pmc_id}/pdf/nihms-{cleaned_nihmsid}.pdf"
+                )
+            } else {
+                format!("https://www.ncbi.nlm.nih.gov/pmc/articles/{pmc_id}/pdf/")
+            }
+        });
 
         PaperMetadata {
             doi,

@@ -7,7 +7,7 @@ keywords = ["mcp", "academic", "papers", "research", "knowledge"]
 license = "GPL-3.0"
 name = "rust-research-mcp"
 repository = "https://github.com/Ladvien/sci_hub_mcp"
-rust-version = "1.90"
+rust-version = "1.87"
 version = "0.6.7"
 exclude = [
     "build/",
@@ -101,6 +101,7 @@ atty = "0.2"
 # Python embedding
 pyo3 = { version = "0.23", features = ["auto-initialize"] }
 include_dir = "0.7"
+once_cell = "1.19"
 
 [dev-dependencies]
 # Testing
