@@ -105,7 +105,8 @@ impl OpenAlexProvider {
             .map_err(|e| ProviderError::Other(format!("Invalid base URL: {e}")))?;
 
         // Build search filter based on query type
-        let filter = match query.search_type {
+        // Track whether filter uses .search: which allows relevance_score sorting
+        let (filter, is_search_filter) = match query.search_type {
             SearchType::Doi => {
                 // Ensure DOI format is correct for OpenAlex
                 let doi = if query.query.starts_with("http") {
@@ -117,18 +118,19 @@ impl OpenAlexProvider {
                         "Invalid DOI format".to_string(),
                     ));
                 };
-                format!("doi:{}", doi)
+                // DOI filter is exact match, not a search - cannot sort by relevance
+                (format!("doi:{}", doi), false)
             }
             SearchType::Title => {
                 if !query.query.trim().is_empty() {
-                    format!("title.search:{}", query.query)
+                    (format!("title.search:{}", query.query), true)
                 } else {
                     return Err(ProviderError::InvalidQuery("Empty query".to_string()));
                 }
             }
             SearchType::Author => {
                 if !query.query.trim().is_empty() {
-                    format!("authorships.author.display_name.search:{}", query.query)
+                    (format!("authorships.author.display_name.search:{}", query.query), true)
                 } else {
                     return Err(ProviderError::InvalidQuery("Empty query".to_string()));
                 }
@@ -136,7 +138,7 @@ impl OpenAlexProvider {
             SearchType::TitleAbstract | SearchType::Keywords | SearchType::Auto => {
                 // For keywords/auto, search in abstract or use default search
                 if !query.query.trim().is_empty() {
-                    format!("default.search:{}", query.query)
+                    (format!("default.search:{}", query.query), true)
                 } else {
                     return Err(ProviderError::InvalidQuery("Empty query".to_string()));
                 }
@@ -144,19 +146,28 @@ impl OpenAlexProvider {
             SearchType::Subject => {
                 // OpenAlex uses concepts for subjects
                 if !query.query.trim().is_empty() {
-                    format!("concepts.display_name.search:{}", query.query)
+                    (format!("concepts.display_name.search:{}", query.query), true)
                 } else {
                     return Err(ProviderError::InvalidQuery("Empty query".to_string()));
                 }
             }
         };
 
-        url.query_pairs_mut()
-            .append_pair("filter", &filter)
-            .append_pair("per-page", &query.max_results.min(200).to_string()) // OpenAlex max is 200 per page
-            .append_pair("cursor", &if query.offset == 0 { "*".to_string() } else { format!("offset:{}", query.offset) })
-            .append_pair("sort", "relevance_score:desc")
-            .append_pair("select", "id,doi,title,authorships,publication_year,primary_location,best_oa_location,abstract_inverted_index");
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs
+                .append_pair("filter", &filter)
+                .append_pair("per-page", &query.max_results.min(200).to_string()) // OpenAlex max is 200 per page
+                .append_pair("cursor", &if query.offset == 0 { "*".to_string() } else { format!("offset:{}", query.offset) });
+
+            // Only sort by relevance_score when using search filters
+            // DOI lookup doesn't support relevance sorting
+            if is_search_filter {
+                pairs.append_pair("sort", "relevance_score:desc");
+            }
+
+            pairs.append_pair("select", "id,doi,title,authorships,publication_year,primary_location,best_oa_location,abstract_inverted_index");
+        }
 
         Ok(url.to_string())
     }
@@ -508,6 +519,8 @@ mod tests {
 
         let url = provider.build_search_url(&query).unwrap();
         assert!(url.contains("filter=doi%3Ahttps%3A%2F%2Fdoi.org%2F10.1038%2Fnature12373"));
+        // DOI search should NOT include relevance_score sort (API doesn't support it for DOI filter)
+        assert!(!url.contains("relevance_score"));
     }
 
     #[test]
@@ -1067,6 +1080,6 @@ mod tests {
 
         // Test supported search types completeness
         let types = provider.supported_search_types();
-        assert_eq!(types.len(), 6);
+        assert_eq!(types.len(), 7); // Title, TitleAbstract, Author, Doi, Keywords, Subject, Auto
     }
 }

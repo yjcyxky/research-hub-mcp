@@ -209,10 +209,17 @@ impl SemanticScholarProvider {
             .map_err(|e| ProviderError::Network(format!("Request failed: {e}")))?;
 
         if !response.status().is_success() {
-            return Err(ProviderError::Network(format!(
-                "API request failed with status: {}",
-                response.status()
-            )));
+            let status = response.status();
+            return Err(match status.as_u16() {
+                429 => ProviderError::RateLimit,
+                503 => ProviderError::ServiceUnavailable(
+                    "Semantic Scholar service temporarily unavailable".to_string(),
+                ),
+                _ => ProviderError::Network(format!(
+                    "API request failed with status: {}",
+                    status
+                )),
+            });
         }
 
         let response_text = response
@@ -460,7 +467,7 @@ mod tests {
 
         assert_eq!(provider.name(), "semantic_scholar");
         assert!(provider.supports_full_text());
-        assert_eq!(provider.priority(), 88);
+        assert_eq!(provider.priority(), 80);
         assert!(provider.supported_search_types().contains(&SearchType::Doi));
     }
 

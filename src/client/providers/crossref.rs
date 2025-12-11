@@ -21,6 +21,7 @@ struct CrossRefResponse {
 
 #[derive(Debug, Deserialize)]
 struct CrossRefMessage {
+    #[serde(default)]
     items: Vec<CrossRefWork>,
     #[serde(rename = "total-results")]
     total_results: Option<u64>,
