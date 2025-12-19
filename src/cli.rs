@@ -134,6 +134,194 @@ enum Commands {
         #[arg(long)]
         no_markdown: bool,
     },
+    /// Start the text2table vLLM server
+    Text2TableServer {
+        /// Model name
+        #[arg(long, default_value = "Qwen/Qwen3-30B-A3B-Instruct-2507")]
+        model: String,
+
+        /// Server host
+        #[arg(long, default_value = "0.0.0.0")]
+        host: String,
+
+        /// Server port
+        #[arg(long, default_value_t = 8000)]
+        port: u16,
+
+        /// Number of GPUs for tensor parallelism
+        #[arg(long, default_value_t = 1)]
+        tensor_parallel_size: usize,
+
+        /// GPU memory utilization (0.0 - 1.0)
+        #[arg(long, default_value_t = 0.9)]
+        gpu_memory_utilization: f32,
+
+        /// Maximum model context length
+        #[arg(long)]
+        max_model_len: Option<usize>,
+
+        /// Trust remote code (required for some models)
+        #[arg(long, default_value_t = true)]
+        trust_remote_code: bool,
+
+        /// Model weights cache directory
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
+    },
+    /// Run text2table extraction pipeline
+    Text2TableCli {
+        #[command(subcommand)]
+        command: Text2TableSubcommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum Text2TableSubcommands {
+    /// Process a single text input
+    Run {
+        /// Raw text to process
+        #[arg(long)]
+        text: Option<String>,
+
+        /// Path to text file
+        #[arg(long)]
+        text_file: Option<PathBuf>,
+
+        /// Labels to extract (repeat for multiple)
+        #[arg(short, long)]
+        label: Vec<String>,
+
+        /// Path to file containing labels (one per line)
+        #[arg(long)]
+        labels_file: Option<PathBuf>,
+
+        /// Custom user prompt
+        #[arg(long)]
+        prompt: Option<String>,
+
+        /// GLiNER threshold
+        #[arg(long, default_value_t = 0.5)]
+        threshold: f64,
+
+        /// GLiNER model name
+        #[arg(long, default_value = "Ihor/gliner-biomed-large-v1.0")]
+        gliner_model: String,
+
+        /// GLiNER soft threshold
+        #[arg(long)]
+        gliner_soft_threshold: Option<f64>,
+
+        /// vLLM Model name
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Enable thinking mode
+        #[arg(long)]
+        enable_thinking: bool,
+
+        /// vLLM Server URL
+        #[arg(long, env = "TEXT2TABLE_VLLM_URL")]
+        server_url: Option<String>,
+
+        /// GLiNER Service URL
+        #[arg(long, env = "TEXT2TABLE_GLINER_URL")]
+        gliner_url: Option<String>,
+
+        /// Disable GLiNER usage
+        #[arg(long)]
+        disable_gliner: bool,
+
+        /// Enable row validation
+        #[arg(long)]
+        enable_row_validation: bool,
+
+        /// Row validation mode
+        #[arg(long, default_value = "substring")]
+        row_validation_mode: String,
+
+        /// API Key
+        #[arg(long, env = "TEXT2TABLE_API_KEY")]
+        api_key: Option<String>,
+
+        /// GLiNER API Key
+        #[arg(long, env = "TEXT2TABLE_GLINER_API_KEY")]
+        gliner_api_key: Option<String>,
+    },
+    /// Batch process from TSV file
+    Batch {
+        /// Input TSV file
+        #[arg(long)]
+        input_file: PathBuf,
+
+        /// Output file (JSONL)
+        #[arg(long)]
+        output_file: Option<PathBuf>,
+
+        /// Concurrency limit
+        #[arg(long, default_value_t = 4)]
+        concurrency: usize,
+
+        // --- Copy of Run args (flattening via struct would be better but keeping it simple here) ---
+        /// Labels to extract (repeat for multiple)
+        #[arg(short, long)]
+        label: Vec<String>,
+
+        /// Path to file containing labels (one per line)
+        #[arg(long)]
+        labels_file: Option<PathBuf>,
+
+        /// Custom user prompt
+        #[arg(long)]
+        prompt: Option<String>,
+
+        /// GLiNER threshold
+        #[arg(long, default_value_t = 0.5)]
+        threshold: f64,
+
+        /// GLiNER model name
+        #[arg(long, default_value = "Ihor/gliner-biomed-large-v1.0")]
+        gliner_model: String,
+
+        /// GLiNER soft threshold
+        #[arg(long)]
+        gliner_soft_threshold: Option<f64>,
+
+        /// vLLM Model name
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Enable thinking mode
+        #[arg(long)]
+        enable_thinking: bool,
+
+        /// vLLM Server URL
+        #[arg(long, env = "TEXT2TABLE_VLLM_URL")]
+        server_url: Option<String>,
+
+        /// GLiNER Service URL
+        #[arg(long, env = "TEXT2TABLE_GLINER_URL")]
+        gliner_url: Option<String>,
+
+        /// Disable GLiNER usage
+        #[arg(long)]
+        disable_gliner: bool,
+
+        /// Enable row validation
+        #[arg(long)]
+        enable_row_validation: bool,
+
+        /// Row validation mode
+        #[arg(long, default_value = "substring")]
+        row_validation_mode: String,
+
+        /// API Key
+        #[arg(long, env = "TEXT2TABLE_API_KEY")]
+        api_key: Option<String>,
+
+        /// GLiNER API Key
+        #[arg(long, env = "TEXT2TABLE_GLINER_API_KEY")]
+        gliner_api_key: Option<String>,
+    },
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, ValueEnum)]
@@ -333,6 +521,141 @@ async fn main() -> anyhow::Result<()> {
                 error!("Conversion failed!");
                 if let Some(err) = result.error {
                     error!("Error: {}", err);
+                }
+            }
+        }
+        Commands::Text2TableServer {
+            model,
+            host,
+            port,
+            tensor_parallel_size,
+            gpu_memory_utilization,
+            max_model_len,
+            trust_remote_code,
+            cache_dir,
+        } => {
+            use rust_research_mcp::python_embed::run_text2table_server;
+
+            run_text2table_server(
+                &model,
+                &host,
+                port,
+                tensor_parallel_size,
+                gpu_memory_utilization,
+                max_model_len,
+                trust_remote_code,
+                cache_dir.as_deref(),
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+        }
+        Commands::Text2TableCli { command } => {
+            use rust_research_mcp::tools::text2table::{
+                Text2TableBatchInput, Text2TableInput, Text2TableTool,
+            };
+
+            let tool = Text2TableTool::new(config.clone())?;
+
+            match command {
+                Text2TableSubcommands::Run {
+                    text,
+                    text_file,
+                    label,
+                    labels_file,
+                    prompt,
+                    threshold,
+                    gliner_model,
+                    gliner_soft_threshold,
+                    model,
+                    enable_thinking,
+                    server_url,
+                    gliner_url,
+                    disable_gliner,
+                    enable_row_validation,
+                    row_validation_mode,
+                    api_key,
+                    gliner_api_key,
+                } => {
+                    let input = Text2TableInput {
+                        text,
+                        text_file: text_file.map(|p| p.to_string_lossy().to_string()),
+                        labels: label,
+                        labels_file: labels_file.map(|p| p.to_string_lossy().to_string()),
+                        prompt,
+                        threshold,
+                        gliner_model,
+                        gliner_soft_threshold,
+                        model,
+                        enable_thinking,
+                        server_url,
+                        gliner_url,
+                        disable_gliner,
+                        enable_row_validation,
+                        row_validation_mode,
+                        api_key,
+                        gliner_api_key,
+                    };
+
+                    let result = tool.generate(input).await?;
+                    if result.success {
+                        info!("Generation succeeded!");
+                        if let Some(table) = result.table {
+                            println!("{}", table);
+                        }
+                        if let Some(thinking) = result.thinking {
+                            info!("Thinking: {}", thinking);
+                        }
+                    } else {
+                        error!("Generation failed: {:?}", result.error);
+                    }
+                }
+                Text2TableSubcommands::Batch {
+                    input_file,
+                    output_file,
+                    concurrency,
+                    label,
+                    labels_file,
+                    prompt,
+                    threshold,
+                    gliner_model,
+                    gliner_soft_threshold,
+                    model,
+                    enable_thinking,
+                    server_url,
+                    gliner_url,
+                    disable_gliner,
+                    enable_row_validation,
+                    row_validation_mode,
+                    api_key,
+                    gliner_api_key,
+                } => {
+                    let config = Text2TableInput {
+                        text: None, // Will be filled per row
+                        text_file: None,
+                        labels: label,
+                        labels_file: labels_file.map(|p| p.to_string_lossy().to_string()),
+                        prompt,
+                        threshold,
+                        gliner_model,
+                        gliner_soft_threshold,
+                        model,
+                        enable_thinking,
+                        server_url,
+                        gliner_url,
+                        disable_gliner,
+                        enable_row_validation,
+                        row_validation_mode,
+                        api_key,
+                        gliner_api_key,
+                    };
+
+                    let input = Text2TableBatchInput {
+                        input_file: input_file.to_string_lossy().to_string(),
+                        output_file: output_file.map(|p| p.to_string_lossy().to_string()),
+                        concurrency,
+                        config,
+                    };
+
+                    tool.process_batch(input).await?;
                 }
             }
         }

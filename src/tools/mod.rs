@@ -7,6 +7,7 @@ pub mod download;
 pub mod metadata;
 pub mod pdf2text;
 pub mod search;
+pub mod text2table;
 
 pub use bibliography::BibliographyTool;
 pub use categorize::CategorizeTool;
