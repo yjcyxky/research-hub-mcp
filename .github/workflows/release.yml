@@ -17,13 +17,40 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
+      tag_name: ${{ steps.get_tag.outputs.tag_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get Release Tag
+        id: get_tag
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.tag_name }}" ]; then
+            echo "Using input tag: ${{ inputs.tag_name }}"
+            echo "tag_name=${{ inputs.tag_name }}" >> $GITHUB_OUTPUT
+          elif [ -n "${{ github.ref_name }}" ] && [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "Using event tag: ${{ github.ref_name }}"
+            echo "tag_name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "Attempting to extract tag from git history..."
+            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            if [ -n "$LATEST_TAG" ]; then
+              echo "Found latest tag: $LATEST_TAG"
+              echo "tag_name=$LATEST_TAG" >> $GITHUB_OUTPUT
+            else
+              echo "No tag found. Defaulting to 'latest-snapshot'"
+              echo "tag_name=latest-snapshot" >> $GITHUB_OUTPUT
+            fi
+          fi
+
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@v1
         with:
-          name: Release ${{ github.ref_name }}
+          tag_name: ${{ steps.get_tag.outputs.tag_name }}
+          name: Release ${{ steps.get_tag.outputs.tag_name }}
           draft: false
           prerelease: false
           generate_release_notes: true
@@ -91,7 +118,7 @@ jobs:
           BINS=("rust-research-mcp" "rust-research")
           
           # Create archive
-          ARCHIVE_NAME="rust-research-mcp-${{ github.ref_name }}-${{ matrix.target }}"
+          ARCHIVE_NAME="rust-research-mcp-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}"
           
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
              # Compressing for Windows not implemented in this matrix, but good for future proofing
@@ -117,6 +144,7 @@ jobs:
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ needs.create-release.outputs.tag_name }}
           files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
