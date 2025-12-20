@@ -135,7 +135,7 @@ enum Commands {
         no_markdown: bool,
     },
     /// Start the text2table vLLM server
-    Text2TableServer {
+    T2TServer {
         /// Model name
         #[arg(long, default_value = "Qwen/Qwen3-30B-A3B-Instruct-2507")]
         model: String,
@@ -169,14 +169,14 @@ enum Commands {
         cache_dir: Option<PathBuf>,
     },
     /// Run text2table extraction pipeline
-    Text2TableCli {
+    T2TCli {
         #[command(subcommand)]
-        command: Text2TableSubcommands,
+        command: T2TSubcommands,
     },
 }
 
 #[derive(Subcommand)]
-enum Text2TableSubcommands {
+enum T2TSubcommands {
     /// Process a single text input
     Run {
         /// Raw text to process
@@ -524,7 +524,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Text2TableServer {
+        Commands::T2TServer {
             model,
             host,
             port,
@@ -548,7 +548,7 @@ async fn main() -> anyhow::Result<()> {
             )
             .map_err(|e| anyhow::anyhow!(e))?;
         }
-        Commands::Text2TableCli { command } => {
+        Commands::T2TCli { command } => {
             use rust_research_mcp::tools::text2table::{
                 Text2TableBatchInput, Text2TableInput, Text2TableTool,
             };
@@ -556,7 +556,7 @@ async fn main() -> anyhow::Result<()> {
             let tool = Text2TableTool::new(config.clone())?;
 
             match command {
-                Text2TableSubcommands::Run {
+                T2TSubcommands::Run {
                     text,
                     text_file,
                     label,
@@ -608,7 +608,7 @@ async fn main() -> anyhow::Result<()> {
                         error!("Generation failed: {:?}", result.error);
                     }
                 }
-                Text2TableSubcommands::Batch {
+                T2TSubcommands::Batch {
                     input_file,
                     output_file,
                     concurrency,
