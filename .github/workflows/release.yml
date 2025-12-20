@@ -66,20 +66,15 @@ jobs:
           - build: linux-x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            use_cross: false
           - build: linux-aarch64
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm64
             target: aarch64-unknown-linux-gnu
-            use_cross: true
-            pyo3_cross_python_version: '3.12'
           - build: macos-x86_64
             os: macos-15
             target: x86_64-apple-darwin
-            use_cross: false
           - build: macos-aarch64
             os: macos-15
             target: aarch64-apple-darwin
-            use_cross: false
 
     steps:
       - uses: actions/checkout@v4
@@ -100,20 +95,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3-dev
 
-      - name: Install Cross
-        if: matrix.use_cross == true
-        run: |
-          cargo install cross --git https://github.com/cross-rs/cross
-
       - name: Build
         shell: bash
         run: |
-          if [ "${{ matrix.use_cross }}" == "true" ]; then
-            export PYO3_CROSS_PYTHON_VERSION=${{ matrix.pyo3_cross_python_version }}
-            cross build --verbose --release --target ${{ matrix.target }}
-          else
-            cargo build --verbose --release --target ${{ matrix.target }}
-          fi
+          cargo build --verbose --release --target ${{ matrix.target }}
 
       - name: Archive assets
         shell: bash
