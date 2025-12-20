@@ -54,7 +54,9 @@ pub struct DownloadInput {
     pub headless: bool,
     /// Whether to use local GROBID server instead of public endpoint (default: false)
     #[serde(default)]
-    #[schemars(description = "Use local GROBID server. When false, uses public endpoint: https://kermitt2-grobid.hf.space")]
+    #[schemars(
+        description = "Use local GROBID server. When false, uses public endpoint: https://kermitt2-grobid.hf.space"
+    )]
     pub enable_local_grobid: bool,
 }
 
@@ -636,7 +638,10 @@ impl DownloadTool {
             return Ok(());
         };
 
-        match self.run_pdf2text(&pdf_path, input.enable_local_grobid).await {
+        match self
+            .run_pdf2text(&pdf_path, input.enable_local_grobid)
+            .await
+        {
             Ok(Some(markdown_path)) => {
                 result.markdown_path = Some(markdown_path);
             }
@@ -655,7 +660,11 @@ impl DownloadTool {
         Ok(())
     }
 
-    async fn run_pdf2text(&self, pdf_path: &Path, enable_local_grobid: bool) -> Result<Option<PathBuf>> {
+    async fn run_pdf2text(
+        &self,
+        pdf_path: &Path,
+        enable_local_grobid: bool,
+    ) -> Result<Option<PathBuf>> {
         if !pdf_path.exists() {
             return Err(crate::Error::InvalidInput {
                 field: "pdf_path".to_string(),
@@ -692,13 +701,13 @@ impl DownloadTool {
             crate::python_embed::run_pdf2text(
                 &pdf_path_clone,
                 &output_dir_clone,
-                grobid_url,      // grobid_url
-                no_auto_start,    // no_auto_start
-                true,             // no_figures
-                true,             // no_tables
-                false,            // copy_pdf
-                true,             // overwrite
-                false,            // no_markdown
+                grobid_url,    // grobid_url
+                no_auto_start, // no_auto_start
+                true,          // no_figures
+                true,          // no_tables
+                false,         // copy_pdf
+                true,          // overwrite
+                false,         // no_markdown
             )
         })
         .await
@@ -815,8 +824,8 @@ impl DownloadTool {
             Ok(result) if result.success => {
                 let file_path = result.file_path.map(PathBuf::from).unwrap_or(target_path);
 
-                let file_size = if result.file_size > 0 {
-                    Some(result.file_size)
+                let file_size = if result.file_size.unwrap_or(0) > 0 {
+                    result.file_size
                 } else {
                     tokio::fs::metadata(&file_path).await.ok().map(|m| m.len())
                 };
@@ -1999,14 +2008,14 @@ impl DownloadTool {
             Ok(plugin_result) => {
                 if plugin_result.success {
                     debug!("✅ CDP download completed successfully");
-                    
+
                     // Get file size
                     let file_size = if file_path.exists() {
                         match tokio::fs::metadata(&file_path).await {
                             Ok(meta) => meta.len(),
                             Err(e) => {
                                 debug!("⚠️ Could not get file metadata: {}", e);
-                                plugin_result.file_size
+                                plugin_result.file_size.unwrap_or(0)
                             }
                         }
                     } else {
@@ -2016,7 +2025,11 @@ impl DownloadTool {
                         ));
                     };
 
-                    debug!("📊 File size: {} bytes ({:.2} MB)", file_size, file_size as f64 / 1_048_576.0);
+                    debug!(
+                        "📊 File size: {} bytes ({:.2} MB)",
+                        file_size,
+                        file_size as f64 / 1_048_576.0
+                    );
 
                     // Update progress
                     progress.downloaded = file_size;
@@ -2051,8 +2064,10 @@ impl DownloadTool {
                         None
                     };
 
-                    debug!("📊 Download stats - size: {} bytes, duration: {:.2}s, speed: {} bytes/s",
-                           file_size, duration_seconds, average_speed);
+                    debug!(
+                        "📊 Download stats - size: {} bytes, duration: {:.2}s, speed: {} bytes/s",
+                        file_size, duration_seconds, average_speed
+                    );
 
                     Ok(DownloadResult {
                         download_id,
@@ -2069,9 +2084,9 @@ impl DownloadTool {
                         error: None,
                     })
                 } else {
-                    let error_msg = plugin_result.error.unwrap_or_else(|| {
-                        "CDP download failed with unknown error".to_string()
-                    });
+                    let error_msg = plugin_result
+                        .error
+                        .unwrap_or_else(|| "CDP download failed with unknown error".to_string());
                     debug!("❌ CDP download failed: {}", error_msg);
                     progress.status = DownloadStatus::Failed;
                     progress.error = Some(error_msg.clone());

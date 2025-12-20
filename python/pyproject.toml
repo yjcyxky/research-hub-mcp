@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rust_research_py"
+version = "0.1.0"
+description = "Python support package for rust-research-mcp"
+authors = [
+  { name = "C. Thomas Brittain", email = "cthomasbrittain@hotmail.com" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "aiohttp",
+    "beautifulsoup4",
+    "click",
+    "requests",
+    "playwright",
+    "numpy",
+    "pandas",
+    "pydantic",
+    "selenium",
+    "webdriver-manager",
+    "scipdf",
+    "grobid-client-python",
+    "vllm",
+    "gliner"
+]
+
+[project.scripts]
+text2table-server = "rust_research_py.text2table.server:main"
+pdf2text = "rust_research_py.pdf2text.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]

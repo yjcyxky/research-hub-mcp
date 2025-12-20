@@ -1,7 +1,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use rust_research_mcp::{Config, ConfigOverrides, DaemonConfig, DaemonService, PidFile, Server};
 use std::sync::Arc;
 use tracing::{debug, error, info};
@@ -11,6 +11,9 @@ use tracing::{debug, error, info};
 #[command(about = "A MCP server for academic research and knowledge accumulation")]
 #[command(version)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// Enable verbose logging
     #[arg(short, long)]
     verbose: bool,
@@ -56,6 +59,12 @@ struct Cli {
     generate_schema: bool,
 }
 
+#[derive(Subcommand)]
+enum Commands {
+    /// Install Python dependencies
+    Install,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -73,6 +82,24 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     info!("Starting rust-research-mcp server");
+
+    // Handle subcommands
+    if let Some(Commands::Install) = cli.command {
+        info!("Installing Python dependencies...");
+        match rust_research_mcp::python_embed::install_python_package() {
+            Ok(_) => {
+                info!("Python dependencies installed successfully.");
+                return Ok(());
+            }
+            Err(e) => {
+                error!("Failed to install Python dependencies: {}", e);
+                return Err(anyhow::anyhow!(
+                    "Failed to install Python dependencies: {}",
+                    e
+                ));
+            }
+        }
+    }
 
     // Handle schema generation request
     if cli.generate_schema {

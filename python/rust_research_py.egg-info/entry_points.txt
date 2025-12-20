@@ -1,0 +1,3 @@
+[console_scripts]
+pdf2text = rust_research_py.pdf2text.cli:cli
+text2table-server = rust_research_py.text2table.server:main

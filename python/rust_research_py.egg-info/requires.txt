@@ -1,0 +1,14 @@
+aiohttp
+beautifulsoup4
+click
+requests
+playwright
+numpy
+pandas
+pydantic
+selenium
+webdriver-manager
+scipdf
+grobid-client-python
+vllm
+gliner

@@ -96,6 +96,8 @@ enum Commands {
         #[arg(long)]
         enable_local_grobid: bool,
     },
+    /// Install Python dependencies
+    Install,
     /// Extract metadata from a PDF file
     Metadata {
         /// Path to a PDF file
@@ -412,6 +414,21 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
         }
+        Commands::Install => {
+            info!("Installing Python dependencies...");
+            match rust_research_mcp::python_embed::install_python_package() {
+                Ok(_) => {
+                    info!("Python dependencies installed successfully.");
+                }
+                Err(e) => {
+                    error!("Failed to install Python dependencies: {}", e);
+                    return Err(anyhow::anyhow!(
+                        "Failed to install Python dependencies: {}",
+                        e
+                    ));
+                }
+            }
+        }
         Commands::Download {
             doi,
             url,
@@ -492,6 +509,7 @@ async fn main() -> anyhow::Result<()> {
             no_markdown,
         } => {
             use rust_research_mcp::tools::pdf2text::{Pdf2TextInput, Pdf2TextTool};
+            use tokio::signal;
 
             let pdf2text_tool = Pdf2TextTool::new(config.clone())?;
             let input = Pdf2TextInput {
@@ -507,20 +525,36 @@ async fn main() -> anyhow::Result<()> {
                 no_markdown,
             };
 
-            let result = pdf2text_tool.convert(input).await?;
-            if result.success {
-                info!("Conversion succeeded!");
-                info!("Files processed: {}", result.files_processed);
-                if let Some(json) = result.json_path {
-                    info!("JSON output: {}", json);
+            // Use tokio::select! to handle Ctrl+C gracefully
+            tokio::select! {
+                result = pdf2text_tool.convert(input) => {
+                    match result {
+                        Ok(result) => {
+                            if result.success {
+                                info!("Conversion succeeded!");
+                                info!("Files processed: {}", result.files_processed);
+                                if let Some(json) = result.json_path {
+                                    info!("JSON output: {}", json);
+                                }
+                                if let Some(md) = result.markdown_path {
+                                    info!("Markdown output: {}", md);
+                                }
+                            } else {
+                                error!("Conversion failed!");
+                                if let Some(err) = result.error {
+                                    error!("Error: {}", err);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Conversion error: {}", e);
+                            return Err(e.into());
+                        }
+                    }
                 }
-                if let Some(md) = result.markdown_path {
-                    info!("Markdown output: {}", md);
-                }
-            } else {
-                error!("Conversion failed!");
-                if let Some(err) = result.error {
-                    error!("Error: {}", err);
+                _ = signal::ctrl_c() => {
+                    info!("Received Ctrl+C, shutting down...");
+                    return Ok(());
                 }
             }
         }

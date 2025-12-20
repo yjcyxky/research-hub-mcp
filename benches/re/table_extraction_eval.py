@@ -567,7 +567,7 @@ def run_text2table_predictions(
     """Run text2table pipeline on samples."""
     import asyncio
 
-    from text2table import AsyncText2Table, BatchItem, BatchResult, DEFAULT_USER_PROMPT
+    from python.rust_research_py.text2table import AsyncText2Table, BatchItem, BatchResult, DEFAULT_USER_PROMPT
 
     logger.info(f"Running text2table with labels: {labels}")
     logger.info(f"Server URL: {server_url}")
