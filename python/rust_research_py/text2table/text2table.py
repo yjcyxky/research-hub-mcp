@@ -10,6 +10,8 @@ through a vLLM OpenAI-compatible endpoint.
 from __future__ import annotations
 
 import asyncio
+import csv
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -1000,3 +1002,130 @@ class AsyncText2Table(Text2Table):
         # Preserve input order by index
         results.sort(key=lambda r: r.index)
         return results
+
+
+def _load_batch_labels(
+    labels: Sequence[str], labels_file: Optional[Union[str, Path]]
+) -> List[str]:
+    combined: List[str] = [label.strip() for label in labels if label and label.strip()]
+    if labels_file:
+        path = Path(labels_file)
+        file_labels = [
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        combined.extend(file_labels)
+    if not combined:
+        raise ValueError("At least one label is required.")
+    return combined
+
+
+def _format_record(headers: Sequence[str], record: Sequence[str]) -> str:
+    parts: List[str] = []
+    for idx, field in enumerate(record):
+        if idx >= len(headers):
+            break
+        parts.append(f"{headers[idx]}: {field}")
+    return "\n".join(parts)
+
+
+def run_text2table_batch(
+    input_file: Union[str, Path],
+    output_file: Union[str, Path],
+    labels: Sequence[str],
+    labels_file: Optional[Union[str, Path]] = None,
+    prompt: Optional[str] = None,
+    threshold: float = 0.5,
+    gliner_model: str = "Ihor/gliner-biomed-large-v1.0",
+    gliner_soft_threshold: Optional[float] = None,
+    model_name: Optional[str] = None,
+    enable_thinking: bool = False,
+    server_url: Optional[str] = None,
+    gliner_url: Optional[str] = None,
+    disable_gliner: bool = False,
+    enable_row_validation: bool = False,
+    row_validation_mode: str = "substring",
+    api_key: Optional[str] = None,
+    gliner_api_key: Optional[str] = None,
+    concurrency: int = 4,
+) -> int:
+    """Run text2table over a TSV/CSV file and write JSONL results."""
+    if concurrency <= 0:
+        raise ValueError("concurrency must be a positive integer.")
+
+    input_path = Path(input_file)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    output_path = Path(output_file)
+    if output_path.parent:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    label_list = _load_batch_labels(labels, labels_file)
+    if not server_url:
+        raise ValueError("server_url is required for batch processing.")
+
+    with input_path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.reader(f, delimiter="\t")
+        rows = [row for row in reader if row]
+
+    if not rows:
+        output_path.touch(exist_ok=True)
+        return 0
+
+    headers = rows[0]
+    formatted_texts = [_format_record(headers, record) for record in rows[1:]]
+
+    extractor = AsyncText2Table(
+        labels=label_list,
+        gliner_model_name=gliner_model,
+        model_name=model_name,
+        threshold=threshold,
+        gliner_soft_threshold=gliner_soft_threshold,
+        enable_thinking=enable_thinking,
+        server_url=server_url,
+        gliner_url=gliner_url,
+        use_gliner=not disable_gliner,
+        api_key=api_key or "dummy-key",
+        gliner_api_key=gliner_api_key,
+        enable_row_validation=enable_row_validation,
+        row_validation_mode=row_validation_mode,
+    )
+
+    batch_items = [
+        BatchItem(text=text_value, index=idx) for idx, text_value in enumerate(formatted_texts)
+    ]
+
+    async def _run_all() -> List[BatchResult]:
+        try:
+            return await extractor.run_many(
+                batch_items,
+                user_prompt=prompt,
+                concurrency=concurrency,
+            )
+        finally:
+            await extractor.close()
+
+    results = asyncio.run(_run_all())
+
+    with output_path.open("a", encoding="utf-8") as f:
+        for result in results:
+            original_text = (
+                formatted_texts[result.index]
+                if 0 <= result.index < len(formatted_texts)
+                else ""
+            )
+            success = result.status == "ok"
+            payload = {
+                "original_text": original_text,
+                "success": success,
+                "table": result.table if success else None,
+                "entities": result.entities if success else None,
+                "thinking": result.thinking or None,
+                "error": result.error if not success else None,
+            }
+            f.write(json.dumps(payload, ensure_ascii=False))
+            f.write("\n")
+
+    return len(results)

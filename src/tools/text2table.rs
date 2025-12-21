@@ -1,13 +1,13 @@
 //! Text2Table tool using embedded Python.
 
-use crate::python_embed::{run_text2table, Text2TableResult};
+use crate::python_embed::{run_text2table, run_text2table_batch};
 use crate::{Config, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::task::spawn_blocking;
-use tracing::{debug, info, instrument, warn};
+use tracing::{info, instrument};
 
 /// Input parameters for text2table generation
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -251,107 +251,86 @@ impl Text2TableTool {
             });
         }
 
-        info!("Reading batch file: {:?}", input_path);
-
-        // Read CSV/TSV
-        let mut rdr = csv::ReaderBuilder::new()
-            .delimiter(b'\t') // Assume TSV by default, or maybe check extension?
-            .from_path(&input_path)
-            .or_else(|_| csv::ReaderBuilder::new().from_path(&input_path)) // Fallback to comma?
-            .map_err(|e| crate::Error::InvalidInput {
-                field: "input_file".to_string(),
-                reason: format!("Failed to open CSV/TSV: {e}"),
-            })?;
-
-        let headers = rdr.headers().cloned().unwrap_or_default();
-
         let output_file = input
             .output_file
             .clone()
             .unwrap_or_else(|| "output.jsonl".to_string());
-        // For now, let's just write JSONL output
-        use std::fs::OpenOptions;
-        use std::io::Write;
+        if let Err(e) = crate::python_embed::check_python_available() {
+            return Err(crate::Error::Service(format!(
+                "Python runtime not available: {e}"
+            )));
+        }
+
+        let server_url = input
+            .config
+            .server_url
+            .clone()
+            .unwrap_or_else(|| "".to_string());
+        if server_url.is_empty() {
+            return Err(crate::Error::InvalidInput {
+                field: "server_url".to_string(),
+                reason: "Server URL is required".to_string(),
+            });
+        }
+
+        if input.concurrency == 0 {
+            return Err(crate::Error::InvalidInput {
+                field: "concurrency".to_string(),
+                reason: "Concurrency must be a positive integer".to_string(),
+            });
+        }
 
         // Ensure output dir exists
         if let Some(parent) = Path::new(&output_file).parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(input.concurrency));
-        let mut tasks = Vec::new();
+        let output_path = PathBuf::from(&output_file);
+        let input_config = input.config.clone();
+        let labels_file = input_config.labels_file.as_ref().map(PathBuf::from);
+        let gliner_url = input_config.gliner_url.clone();
+        let concurrency = input.concurrency;
 
-        for result in rdr.records() {
-            let record = result.map_err(|e| crate::Error::InvalidInput {
-                field: "input_file".to_string(),
-                reason: format!("Failed to read record: {e}"),
-            })?;
+        info!("Delegating batch processing to Python (concurrency={})", concurrency);
 
-            // Format record as "Key: Value"
-            let mut text_parts = Vec::new();
-            for (i, field) in record.iter().enumerate() {
-                if let Some(header) = headers.get(i) {
-                    text_parts.push(format!("{}: {}", header, field));
-                }
+        let processed = spawn_blocking(move || {
+            run_text2table_batch(
+                &input_path,
+                &output_path,
+                &input_config.labels,
+                labels_file.as_deref(),
+                input_config.prompt.as_deref(),
+                input_config.threshold,
+                &input_config.gliner_model,
+                input_config.gliner_soft_threshold,
+                input_config.model.as_deref(),
+                input_config.enable_thinking,
+                &server_url,
+                gliner_url.as_deref(),
+                input_config.disable_gliner,
+                input_config.enable_row_validation,
+                &input_config.row_validation_mode,
+                input_config.api_key.as_deref(),
+                input_config.gliner_api_key.as_deref(),
+                concurrency,
+            )
+        })
+        .await
+        .map_err(|e| crate::Error::Service(format!("Task panicked: {e}")))?;
+
+        match processed {
+            Ok(count) => {
+                info!(
+                    "Batch processing complete ({} rows). Output saved to {}",
+                    count, output_file
+                );
             }
-            let formatted_text = text_parts.join("\n");
-
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let tool = self.clone();
-            let row_config = input.config.clone();
-
-            // Create a task
-            tasks.push(tokio::spawn(async move {
-                // Determine ID if possible? For now rely on index or content?
-                // Let's create a "row_input"
-                let mut row_input = row_config;
-                row_input.text = Some(formatted_text.clone());
-                row_input.text_file = None;
-
-                debug!("Processing row: {:.50}...", formatted_text);
-
-                let res = tool.generate(row_input).await;
-
-                // Write result (simple lock-less append might be issues if concurrent? standard file append on unix is atomic for small writes usually, but better use a channel or mutex)
-                // For simplicity in this step, let's just print or format
-
-                drop(permit);
-                (formatted_text, res)
-            }));
-        }
-
-        // Await all and write sequentially to avoid race conditions on file write
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&output_file)
-            .map_err(|e| crate::Error::Service(format!("Failed to open output file: {e}")))?;
-
-        for task in tasks {
-            let (original_text, result) = task.await.unwrap(); // Handle join error?
-
-            let output_obj = match result {
-                Ok(out) => serde_json::json!({
-                    "original_text": original_text,
-                    "success": out.success,
-                    "table": out.table,
-                    "entities": out.entities,
-                    "thinking": out.thinking,
-                    "error": out.error
-                }),
-                Err(e) => serde_json::json!({
-                    "original_text": original_text,
-                    "success": false,
-                    "error": e.to_string()
-                }),
-            };
-
-            if let Err(e) = writeln!(file, "{}", output_obj.to_string()) {
-                warn!("Failed to write result: {e}");
+            Err(e) => {
+                return Err(crate::Error::Service(format!(
+                    "Batch processing failed: {e}"
+                )));
             }
         }
-
-        info!("Batch processing complete. Output saved to {}", output_file);
 
         Ok(())
     }

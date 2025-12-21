@@ -448,6 +448,122 @@ pub fn run_text2table(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn run_text2table_batch(
+    input_file: &Path,
+    output_file: &Path,
+    labels: &[String],
+    labels_file: Option<&Path>,
+    prompt: Option<&str>,
+    threshold: f64,
+    gliner_model: &str,
+    gliner_soft_threshold: Option<f64>,
+    model_name: Option<&str>,
+    enable_thinking: bool,
+    server_url: &str,
+    gliner_url: Option<&str>,
+    disable_gliner: bool,
+    enable_row_validation: bool,
+    row_validation_mode: &str,
+    api_key: Option<&str>,
+    gliner_api_key: Option<&str>,
+    concurrency: usize,
+) -> Result<usize, String> {
+    Python::with_gil(|py| {
+        let t2t_module = py
+            .import("rust_research_py.text2table.text2table")
+            .map_err(|e| format!("Failed to import rust_research_py.text2table.text2table: {e}"))?;
+
+        let kwargs = PyDict::new(py);
+        kwargs
+            .set_item("input_file", input_file.to_string_lossy().to_string())
+            .map_err(|e| format!("Failed to set input_file: {e}"))?;
+        kwargs
+            .set_item("output_file", output_file.to_string_lossy().to_string())
+            .map_err(|e| format!("Failed to set output_file: {e}"))?;
+        kwargs
+            .set_item("labels", labels)
+            .map_err(|e| format!("Failed to set labels: {e}"))?;
+        kwargs
+            .set_item("threshold", threshold)
+            .map_err(|e| format!("Failed to set threshold: {e}"))?;
+        kwargs
+            .set_item("gliner_model", gliner_model)
+            .map_err(|e| format!("Failed to set gliner_model: {e}"))?;
+        kwargs
+            .set_item("enable_thinking", enable_thinking)
+            .map_err(|e| format!("Failed to set enable_thinking: {e}"))?;
+        kwargs
+            .set_item("server_url", server_url)
+            .map_err(|e| format!("Failed to set server_url: {e}"))?;
+        kwargs
+            .set_item("disable_gliner", disable_gliner)
+            .map_err(|e| format!("Failed to set disable_gliner: {e}"))?;
+        kwargs
+            .set_item("enable_row_validation", enable_row_validation)
+            .map_err(|e| format!("Failed to set enable_row_validation: {e}"))?;
+        kwargs
+            .set_item("row_validation_mode", row_validation_mode)
+            .map_err(|e| format!("Failed to set row_validation_mode: {e}"))?;
+        kwargs
+            .set_item("concurrency", concurrency)
+            .map_err(|e| format!("Failed to set concurrency: {e}"))?;
+
+        if let Some(path) = labels_file {
+            kwargs
+                .set_item("labels_file", path.to_string_lossy().to_string())
+                .map_err(|e| format!("Failed to set labels_file: {e}"))?;
+        }
+
+        if let Some(p) = prompt {
+            kwargs
+                .set_item("prompt", p)
+                .map_err(|e| format!("Failed to set prompt: {e}"))?;
+        }
+
+        if let Some(t) = gliner_soft_threshold {
+            kwargs
+                .set_item("gliner_soft_threshold", t)
+                .map_err(|e| format!("Failed to set gliner_soft_threshold: {e}"))?;
+        }
+
+        if let Some(m) = model_name {
+            kwargs
+                .set_item("model_name", m)
+                .map_err(|e| format!("Failed to set model_name: {e}"))?;
+        }
+
+        if let Some(url) = gliner_url {
+            kwargs
+                .set_item("gliner_url", url)
+                .map_err(|e| format!("Failed to set gliner_url: {e}"))?;
+        }
+
+        if let Some(k) = api_key {
+            kwargs
+                .set_item("api_key", k)
+                .map_err(|e| format!("Failed to set api_key: {e}"))?;
+        }
+
+        if let Some(k) = gliner_api_key {
+            kwargs
+                .set_item("gliner_api_key", k)
+                .map_err(|e| format!("Failed to set gliner_api_key: {e}"))?;
+        }
+
+        let func = t2t_module
+            .getattr("run_text2table_batch")
+            .map_err(|e| format!("Failed to load run_text2table_batch: {e}"))?;
+        let result = func
+            .call((), Some(&kwargs))
+            .map_err(|e| format!("Failed to call run_text2table_batch: {e}"))?;
+
+        result
+            .extract::<usize>()
+            .map_err(|e| format!("Failed to parse batch result: {e}"))
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn run_text2table_server(
     model: &str,
     host: &str,
