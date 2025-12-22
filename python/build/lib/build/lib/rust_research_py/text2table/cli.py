@@ -594,7 +594,7 @@ def run_command(
 @click.option(
     "--request-timeout",
     type=float,
-    default=120.0,
+    default=600.0,
     show_default=True,
     help="HTTP timeout (seconds) for both GLiNER and vLLM service calls.",
 )

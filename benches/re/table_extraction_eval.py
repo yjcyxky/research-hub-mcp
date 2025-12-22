@@ -584,6 +584,7 @@ def run_text2table_predictions(
         use_gliner=not disable_gliner,
         enable_row_validation=enable_row_validation,
         row_validation_mode=row_validation_mode,
+        request_timeout=600,
     )
 
     batch_items = [BatchItem(text=sample.text, index=idx) for idx, sample in enumerate(samples)]
