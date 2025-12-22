@@ -32,7 +32,8 @@ async def test_async_run_without_gliner(monkeypatch):
 
     table, entities = await extractor.run("some text")
 
-    assert "| A |" in table
+    assert table.splitlines()[0] == "A\tconfidence"
+    assert table.splitlines()[1] == "x\t1.0"
     assert entities == []
     assert client.calls == 1
 
@@ -56,8 +57,8 @@ async def test_async_run_with_thinking(monkeypatch):
     table, entities = await extractor.run("example text")
     thinking, final_table, _ = await extractor.run_with_thinking("example text")
 
-    assert table.startswith("| Drug |")
-    assert final_table.startswith("| Drug |")
+    assert table.startswith("Drug\tconfidence")
+    assert final_table.startswith("Drug\tconfidence")
     assert "step1" in thinking
     assert entities == []
     assert client.calls == 2

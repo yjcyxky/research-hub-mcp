@@ -255,9 +255,13 @@ enum T2TSubcommands {
         #[arg(long)]
         input_file: PathBuf,
 
-        /// Output file (JSONL)
+        /// Output file (defaults to output.jsonl or output.tsv based on --output-format)
         #[arg(long)]
         output_file: Option<PathBuf>,
+
+        /// Output format (jsonl or tsv)
+        #[arg(long, value_enum, default_value_t = BatchOutputFormat::Jsonl)]
+        output_format: BatchOutputFormat,
 
         /// Concurrency limit
         #[arg(long, default_value_t = 4)]
@@ -324,6 +328,21 @@ enum T2TSubcommands {
         #[arg(long, env = "TEXT2TABLE_GLINER_API_KEY")]
         gliner_api_key: Option<String>,
     },
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, ValueEnum)]
+enum BatchOutputFormat {
+    Jsonl,
+    Tsv,
+}
+
+impl BatchOutputFormat {
+    fn as_str(&self) -> &'static str {
+        match self {
+            BatchOutputFormat::Jsonl => "jsonl",
+            BatchOutputFormat::Tsv => "tsv",
+        }
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, ValueEnum)]
@@ -629,22 +648,31 @@ async fn main() -> anyhow::Result<()> {
                         gliner_api_key,
                     };
 
-                    let result = tool.generate(input).await?;
-                    if result.success {
-                        info!("Generation succeeded!");
-                        if let Some(table) = result.table {
-                            println!("{}", table);
+                    tokio::select! {
+                        result = tool.generate(input) => {
+                            let result = result?;
+                            if result.success {
+                                info!("Generation succeeded!");
+                                if let Some(table) = result.table {
+                                    println!("{}", table);
+                                }
+                                if let Some(thinking) = result.thinking {
+                                    info!("Thinking: {}", thinking);
+                                }
+                            } else {
+                                error!("Generation failed: {:?}", result.error);
+                            }
                         }
-                        if let Some(thinking) = result.thinking {
-                            info!("Thinking: {}", thinking);
+                        _ = wait_for_shutdown_signal() => {
+                            info!("Received shutdown signal, terminating text2table run...");
+                            std::process::exit(130);
                         }
-                    } else {
-                        error!("Generation failed: {:?}", result.error);
                     }
                 }
                 T2TSubcommands::Batch {
                     input_file,
                     output_file,
+                    output_format,
                     concurrency,
                     label,
                     labels_file,
@@ -685,11 +713,20 @@ async fn main() -> anyhow::Result<()> {
                     let input = Text2TableBatchInput {
                         input_file: input_file.to_string_lossy().to_string(),
                         output_file: output_file.map(|p| p.to_string_lossy().to_string()),
+                        output_format: output_format.as_str().to_string(),
                         concurrency,
                         config,
                     };
 
-                    tool.process_batch(input).await?;
+                    tokio::select! {
+                        result = tool.process_batch(input) => {
+                            result?;
+                        }
+                        _ = wait_for_shutdown_signal() => {
+                            info!("Received shutdown signal, terminating text2table batch...");
+                            std::process::exit(130);
+                        }
+                    }
                 }
             }
         }
@@ -720,4 +757,30 @@ fn init_tracing(cli: &Cli) {
 
     let _ = tracing::subscriber::set_global_default(subscriber);
     info!("CLI logging initialized at {:?} level", level);
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(sigterm) => sigterm,
+            Err(err) => {
+                error!("Failed to register SIGTERM handler: {}", err);
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }

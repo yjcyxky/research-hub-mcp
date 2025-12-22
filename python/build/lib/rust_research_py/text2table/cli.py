@@ -180,7 +180,7 @@ def cli() -> None:
 )
 @click.option(
     "--max-new-tokens",
-    default=512,
+    default=4096,
     show_default=True,
     help="Maximum tokens to generate for the table.",
 )

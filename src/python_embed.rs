@@ -18,6 +18,9 @@ pub fn install_python_package() -> Result<(), String> {
         temp_dir.display()
     );
 
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Failed to create temp dir for embedded package: {e}"))?;
+
     // Extract the package to the temporary directory
     RUST_RESEARCH_PY_PACKAGE
         .extract(&temp_dir)
@@ -451,6 +454,7 @@ pub fn run_text2table(
 pub fn run_text2table_batch(
     input_file: &Path,
     output_file: &Path,
+    output_format: &str,
     labels: &[String],
     labels_file: Option<&Path>,
     prompt: Option<&str>,
@@ -480,6 +484,9 @@ pub fn run_text2table_batch(
         kwargs
             .set_item("output_file", output_file.to_string_lossy().to_string())
             .map_err(|e| format!("Failed to set output_file: {e}"))?;
+        kwargs
+            .set_item("output_format", output_format)
+            .map_err(|e| format!("Failed to set output_format: {e}"))?;
         kwargs
             .set_item("labels", labels)
             .map_err(|e| format!("Failed to set labels: {e}"))?;

@@ -14,6 +14,7 @@ import csv
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING, Union
@@ -106,6 +107,413 @@ def _strip_think_blocks(table_text: str) -> str:
     return cleaned.strip()
 
 
+def _remove_think_tags(text: str) -> str:
+    """Remove <think> tags but keep the enclosed content."""
+    if not text:
+        return text
+    return re.sub(r"</?think>", "", text, flags=re.IGNORECASE).strip()
+
+
+def _extract_think_blocks(text: str) -> List[str]:
+    """Return the inner content of all <think>...</think> blocks."""
+    if not text:
+        return []
+    blocks = re.findall(r"<think>(.*?)</think>", text, flags=re.DOTALL | re.IGNORECASE)
+    return [block.strip() for block in blocks if block and block.strip()]
+
+
+def _normalize_header_key(value: object) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+
+def _clean_cell_value(value: object) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    return text.replace("\t", " ").replace("\n", " ").replace("\r", " ").strip()
+
+
+def _extract_fenced_blocks(text: str) -> List[str]:
+    if not text or "```" not in text:
+        return []
+    parts = text.split("```")
+    blocks: List[str] = []
+    for idx in range(1, len(parts), 2):
+        block = parts[idx].strip()
+        if not block:
+            continue
+        lines = block.splitlines()
+        if lines:
+            first = lines[0].strip().lower()
+            if re.fullmatch(r"[a-z0-9_+-]+", first or "") and len(lines) > 1:
+                if first in {"tsv", "table", "text", "json", "jsonl"}:
+                    block = "\n".join(lines[1:]).strip()
+        if block:
+            blocks.append(block)
+    return blocks
+
+
+def _collect_candidate_blocks(text: str) -> List[str]:
+    candidates: List[str] = []
+    seen: set = set()
+
+    def add(value: str) -> None:
+        if not value:
+            return
+        stripped = value.strip()
+        if not stripped or stripped in seen:
+            return
+        seen.add(stripped)
+        candidates.append(stripped)
+
+    add(text)
+    add(_strip_think_blocks(text))
+    add(_remove_think_tags(text))
+    for block in _extract_think_blocks(text):
+        add(block)
+
+    for base in list(candidates):
+        for block in _extract_fenced_blocks(base):
+            add(block)
+
+    return candidates
+
+
+def _find_tsv_tables(text: str) -> List[Tuple[List[str], List[List[str]]]]:
+    if not text:
+        return []
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return []
+    blocks: List[List[str]] = []
+    current: List[str] = []
+    for line in lines:
+        if "\t" in line:
+            current.append(line)
+        else:
+            if current:
+                blocks.append(current)
+                current = []
+    if current:
+        blocks.append(current)
+
+    tables: List[Tuple[List[str], List[List[str]]]] = []
+    for block in blocks:
+        headers = [h.strip() for h in block[0].split("\t")]
+        rows = [[c.strip() for c in line.split("\t")] for line in block[1:]]
+        tables.append((headers, rows))
+    return tables
+
+
+def _is_markdown_separator(cells: List[str]) -> bool:
+    for cell in cells:
+        if not cell:
+            continue
+        if not re.fullmatch(r":?-{3,}:?", cell.strip()):
+            return False
+    return True
+
+
+def _parse_markdown_block(lines: List[str]) -> Tuple[List[str], List[List[str]]]:
+    rows: List[List[str]] = []
+    for line in lines:
+        if line.count("|") < 2:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            stripped = stripped[1:]
+        if stripped.endswith("|"):
+            stripped = stripped[:-1]
+        cells = [cell.strip() for cell in stripped.split("|")]
+        if cells and any(cell for cell in cells):
+            rows.append(cells)
+
+    if not rows:
+        return [], []
+
+    header: List[str] = []
+    data_rows: List[List[str]] = []
+    for row in rows:
+        if not header:
+            header = row
+            continue
+        if _is_markdown_separator(row):
+            continue
+        data_rows.append(row)
+    return header, data_rows
+
+
+def _find_markdown_tables(text: str) -> List[Tuple[List[str], List[List[str]]]]:
+    if not text:
+        return []
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return []
+    blocks: List[List[str]] = []
+    current: List[str] = []
+    for line in lines:
+        if line.count("|") >= 2:
+            current.append(line)
+        else:
+            if current:
+                blocks.append(current)
+                current = []
+    if current:
+        blocks.append(current)
+
+    tables: List[Tuple[List[str], List[List[str]]]] = []
+    for block in blocks:
+        headers, rows = _parse_markdown_block(block)
+        if headers:
+            tables.append((headers, rows))
+    return tables
+
+
+def _extract_json_substring(text: str) -> Optional[str]:
+    if not text:
+        return None
+    for open_char, close_char in (("{", "}"), ("[", "]")):
+        start = text.find(open_char)
+        while start != -1:
+            depth = 0
+            for idx in range(start, len(text)):
+                ch = text[idx]
+                if ch == open_char:
+                    depth += 1
+                elif ch == close_char:
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start : idx + 1]
+                        try:
+                            json.loads(candidate)
+                        except Exception:
+                            break
+                        return candidate
+            start = text.find(open_char, start + 1)
+    return None
+
+
+def _iter_json_payloads(text: str) -> List[object]:
+    payloads: List[object] = []
+    seen: set = set()
+
+    def add(payload: object) -> None:
+        try:
+            key = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        except Exception:
+            key = None
+        if key and key in seen:
+            return
+        if key:
+            seen.add(key)
+        payloads.append(payload)
+
+    stripped = text.strip() if text else ""
+    if stripped:
+        try:
+            add(json.loads(stripped))
+        except Exception:
+            pass
+
+    for line in text.splitlines() if text else []:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            add(json.loads(line))
+        except Exception:
+            continue
+
+    block = _extract_json_substring(text)
+    if block:
+        try:
+            add(json.loads(block))
+        except Exception:
+            pass
+    return payloads
+
+
+def _mapping_to_row(mapping: Dict[str, object], headers: List[str]) -> List[str]:
+    normalized: Dict[str, object] = {}
+    for key, value in mapping.items():
+        norm_key = _normalize_header_key(key)
+        if norm_key and norm_key not in normalized:
+            normalized[norm_key] = value
+    row: List[str] = []
+    for header in headers:
+        value = mapping.get(header)
+        if value is None:
+            norm = _normalize_header_key(header)
+            if norm:
+                value = normalized.get(norm)
+        row.append(_clean_cell_value(value))
+    return row
+
+
+def _coerce_json_rows(rows_raw: object, headers: List[str]) -> List[List[str]]:
+    rows: List[List[str]] = []
+    if isinstance(rows_raw, list):
+        for row in rows_raw:
+            if isinstance(row, dict):
+                cells = row.get("cells") if isinstance(row.get("cells"), dict) else None
+                if cells is not None:
+                    rows.append(_mapping_to_row(cells, headers))
+                else:
+                    rows.append(_mapping_to_row(row, headers))
+            elif isinstance(row, list):
+                rows.append([_clean_cell_value(cell) for cell in row])
+            else:
+                rows.append([_clean_cell_value(row)])
+    return rows
+
+
+def _json_payload_to_tables(
+    payload: object, expected_headers: List[str]
+) -> List[Tuple[List[str], List[List[str]]]]:
+    if payload is None:
+        return []
+    if isinstance(payload, str):
+        return _find_tsv_tables(payload) or _find_markdown_tables(payload)
+    if isinstance(payload, dict):
+        if "pred_table" in payload and isinstance(payload.get("pred_table"), dict):
+            return _json_payload_to_tables(payload.get("pred_table"), expected_headers)
+        if "headers" in payload and "rows" in payload:
+            headers_raw = payload.get("headers") or []
+            headers = [str(h) for h in headers_raw if h is not None]
+            rows = _coerce_json_rows(payload.get("rows"), headers or expected_headers)
+            return [(headers or expected_headers, rows)]
+        if "table" in payload and isinstance(payload.get("table"), str):
+            tables = _find_tsv_tables(payload.get("table"))
+            if tables:
+                return tables
+            tables = _find_markdown_tables(payload.get("table"))
+            if tables:
+                return tables
+        if any(
+            _normalize_header_key(key) in {_normalize_header_key(h) for h in expected_headers}
+            for key in payload.keys()
+        ):
+            return [(expected_headers, [_mapping_to_row(payload, expected_headers)])]
+        for key in ("row", "data", "record"):
+            if isinstance(payload.get(key), dict):
+                return [(expected_headers, [_mapping_to_row(payload[key], expected_headers)])]
+    if isinstance(payload, list):
+        if not payload:
+            return []
+        if all(isinstance(item, dict) for item in payload):
+            rows = [_mapping_to_row(item, expected_headers) for item in payload]
+            return [(expected_headers, rows)]
+        if all(isinstance(item, list) for item in payload):
+            rows = [
+                [_clean_cell_value(cell) for cell in item] for item in payload
+            ]
+            return [(expected_headers, rows)]
+    return []
+
+
+def _find_json_tables(text: str, expected_headers: List[str]) -> List[Tuple[List[str], List[List[str]]]]:
+    tables: List[Tuple[List[str], List[List[str]]]] = []
+    for payload in _iter_json_payloads(text):
+        tables.extend(_json_payload_to_tables(payload, expected_headers))
+    return tables
+
+
+def _score_parsed_table(
+    headers: List[str], rows: List[List[str]], expected_headers: List[str]
+) -> int:
+    if not headers and not rows:
+        return -1
+    expected_norm = [_normalize_header_key(h) for h in expected_headers]
+    parsed_norm = [_normalize_header_key(h) for h in headers]
+    match_count = sum(1 for h in expected_norm if h and h in parsed_norm)
+    exact_order = parsed_norm == expected_norm if parsed_norm else False
+    score = match_count * 10 + len(rows) * 12
+    if rows:
+        score += 5
+    if len(headers) == len(expected_headers):
+        score += 3
+    if exact_order:
+        score += 5
+    return score
+
+
+def _prepare_parsed_table(
+    headers: List[str], rows: List[List[str]], expected_headers: List[str]
+) -> Tuple[List[str], List[List[str]]]:
+    if headers:
+        expected_norm = {_normalize_header_key(h) for h in expected_headers}
+        parsed_norm = {_normalize_header_key(h) for h in headers}
+        match_count = sum(1 for h in expected_norm if h and h in parsed_norm)
+        if match_count == 0 and (not rows or len(headers) == len(expected_headers)):
+            rows = [headers] + rows
+            headers = []
+    return headers, rows
+
+
+def _align_rows_to_headers(
+    headers: List[str], rows: List[List[str]], expected_headers: List[str]
+) -> List[List[str]]:
+    expected_norm = [_normalize_header_key(h) for h in expected_headers]
+    header_norm = [_normalize_header_key(h) for h in headers]
+    index_by_norm: Dict[str, int] = {}
+    for idx, key in enumerate(header_norm):
+        if key and key not in index_by_norm:
+            index_by_norm[key] = idx
+    match_count = sum(1 for key in expected_norm if key and key in index_by_norm)
+    fallback_by_position = not headers or match_count == 0
+
+    aligned_rows: List[List[str]] = []
+    for row in rows:
+        aligned: List[str] = []
+        for col_idx, header in enumerate(expected_headers):
+            if fallback_by_position:
+                value = row[col_idx] if col_idx < len(row) else ""
+            else:
+                idx = index_by_norm.get(expected_norm[col_idx])
+                value = row[idx] if idx is not None and idx < len(row) else ""
+            aligned.append(_clean_cell_value(value))
+        aligned_rows.append(aligned)
+    return aligned_rows
+
+
+def _normalize_output_to_tsv(output: str, expected_headers: List[str]) -> str:
+    if not expected_headers:
+        return ""
+    if not output or not output.strip():
+        return _rebuild_tsv_table(expected_headers, [])
+
+    best_headers: List[str] = []
+    best_rows: List[List[str]] = []
+    best_score = -1
+
+    for candidate in _collect_candidate_blocks(output):
+        for headers, rows in _find_tsv_tables(candidate):
+            score = _score_parsed_table(headers, rows, expected_headers)
+            if score > best_score:
+                best_score = score
+                best_headers, best_rows = headers, rows
+        for headers, rows in _find_markdown_tables(candidate):
+            score = _score_parsed_table(headers, rows, expected_headers)
+            if score > best_score:
+                best_score = score
+                best_headers, best_rows = headers, rows
+        for headers, rows in _find_json_tables(candidate, expected_headers):
+            score = _score_parsed_table(headers, rows, expected_headers)
+            if score > best_score:
+                best_score = score
+                best_headers, best_rows = headers, rows
+
+    if best_score < 0:
+        logger.warning("Unable to parse table from model output; returning header-only TSV.")
+        return _rebuild_tsv_table(expected_headers, [])
+
+    best_headers, best_rows = _prepare_parsed_table(best_headers, best_rows, expected_headers)
+    aligned_rows = _align_rows_to_headers(best_headers, best_rows, expected_headers)
+    return _rebuild_tsv_table(expected_headers, aligned_rows)
+
+
 def _parse_tsv_table(table_tsv: str) -> Tuple[List[str], List[List[str]]]:
     """Parse a TSV table into headers and rows."""
     if not table_tsv:
@@ -141,6 +549,37 @@ def _rebuild_tsv_table(headers: List[str], rows: List[List[str]]) -> str:
                 padded[confidence_idx] = "1.0"
         row_lines.append("\t".join(padded[: len(headers)]))
     return "\n".join([header_line] + row_lines)
+
+
+def _merge_tsv_tables(tables: Sequence[str]) -> str:
+    """Merge multiple TSV tables into a single TSV with a shared header."""
+    merged_headers: List[str] = []
+    merged_rows: List[List[str]] = []
+    for table in tables:
+        if not table or not table.strip():
+            continue
+        headers, rows = _parse_tsv_table(table)
+        if not headers:
+            continue
+        if not merged_headers:
+            merged_headers = headers
+        if headers != merged_headers:
+            logger.warning("Batch output header mismatch. Expected %s, got %s", merged_headers, headers)
+            header_index = {header: idx for idx, header in enumerate(headers)}
+            for row in rows:
+                aligned: List[str] = []
+                for header in merged_headers:
+                    idx = header_index.get(header)
+                    if idx is None or idx >= len(row):
+                        aligned.append("")
+                    else:
+                        aligned.append(row[idx])
+                merged_rows.append(aligned)
+            continue
+        merged_rows.extend(rows)
+    if not merged_headers:
+        return ""
+    return _rebuild_tsv_table(merged_headers, merged_rows)
 
 
 def _extract_row_from_text(headers: List[str], text: str, original_row: List[str]) -> List[str]:
@@ -461,6 +900,15 @@ class Text2Table:
             use_gliner=self.use_gliner,
         )
 
+    def _expected_headers(self) -> List[str]:
+        headers_list = list(self.labels)
+        if self.include_confidence and "confidence" not in [h.lower() for h in headers_list]:
+            headers_list.append("confidence")
+        return headers_list
+
+    def _normalize_table_output(self, output: str) -> str:
+        return _normalize_output_to_tsv(output, self._expected_headers())
+
     def build_prompt(
         self,
         text: str,
@@ -469,9 +917,7 @@ class Text2Table:
     ) -> str:
         """Build the prompt using the centralized prompts module."""
         entity_block = self._format_entities(entities)
-        headers_list = list(self.labels)
-        if self.include_confidence and "confidence" not in [h.lower() for h in headers_list]:
-            headers_list.append("confidence")
+        headers_list = self._expected_headers()
         header = ", ".join(headers_list)
 
         return build_entity_extraction_prompt(
@@ -627,17 +1073,15 @@ class Text2Table:
         logger.debug("Generated output length: %d", len(output))
 
         if self.enable_thinking:
-            thinking, table = self._parse_thinking_output(output)
+            thinking, _ = self._parse_thinking_output(output)
             if thinking:
                 logger.info("Thinking process:\n%s", thinking)
-            logger.debug("Final table length: %d", len(table))
-            if self.enable_row_validation:
-                table = self._validate_table_rows(text, table)
-            return table, entities
-        else:
-            if self.enable_row_validation:
-                output = self._validate_table_rows(text, output)
-            return output, entities
+
+        table = self._normalize_table_output(output)
+        logger.debug("Normalized table length: %d", len(table))
+        if self.enable_row_validation:
+            table = self._validate_table_rows(text, table)
+        return table, entities
 
     def run_with_thinking(
         self,
@@ -660,8 +1104,10 @@ class Text2Table:
             temperature=temperature,
             top_p=top_p,
         )
-        thinking, table = self._parse_thinking_output(output)
-        table = self._validate_table_rows(text, table) if self.enable_row_validation else table
+        thinking, _ = self._parse_thinking_output(output)
+        table = self._normalize_table_output(output)
+        if self.enable_row_validation:
+            table = self._validate_table_rows(text, table)
         return thinking, table, entities
 
     def close(self) -> None:
@@ -848,17 +1294,15 @@ class AsyncText2Table(Text2Table):
         logger.debug("Generated output length: %d", len(output))
 
         if self.enable_thinking:
-            thinking, table = self._parse_thinking_output(output)
+            thinking, _ = self._parse_thinking_output(output)
             if thinking:
                 logger.info("Thinking process:\n%s", thinking)
-            logger.debug("Final table length: %d", len(table))
-            if self.enable_row_validation:
-                table = await self._validate_table_rows_async(text, table)
-            return table, entities
-        else:
-            if self.enable_row_validation:
-                output = await self._validate_table_rows_async(text, output)
-            return output, entities
+
+        table = self._normalize_table_output(output)
+        logger.debug("Normalized table length: %d", len(table))
+        if self.enable_row_validation:
+            table = await self._validate_table_rows_async(text, table)
+        return table, entities
 
     async def run_with_thinking(
         self,
@@ -877,7 +1321,8 @@ class AsyncText2Table(Text2Table):
             temperature=temperature,
             top_p=top_p,
         )
-        thinking, table = self._parse_thinking_output(output)
+        thinking, _ = self._parse_thinking_output(output)
+        table = self._normalize_table_output(output)
         if self.enable_row_validation:
             table = await self._validate_table_rows_async(text, table)
         return thinking, table, entities
@@ -1049,8 +1494,9 @@ def run_text2table_batch(
     api_key: Optional[str] = None,
     gliner_api_key: Optional[str] = None,
     concurrency: int = 4,
+    output_format: str = "jsonl",
 ) -> int:
-    """Run text2table over a TSV/CSV file and write JSONL results."""
+    """Run text2table over a TSV/CSV file and write JSONL or TSV results."""
     if concurrency <= 0:
         raise ValueError("concurrency must be a positive integer.")
 
@@ -1061,6 +1507,10 @@ def run_text2table_batch(
     output_path = Path(output_file)
     if output_path.parent:
         output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    normalized_format = output_format.strip().lower() if output_format else "jsonl"
+    if normalized_format not in {"jsonl", "tsv"}:
+        raise ValueError("output_format must be 'jsonl' or 'tsv'.")
 
     label_list = _load_batch_labels(labels, labels_file)
     if not server_url:
@@ -1103,29 +1553,40 @@ def run_text2table_batch(
                 batch_items,
                 user_prompt=prompt,
                 concurrency=concurrency,
+                max_new_tokens=4096
             )
         finally:
             await extractor.close()
 
     results = asyncio.run(_run_all())
 
-    with output_path.open("a", encoding="utf-8") as f:
-        for result in results:
-            original_text = (
-                formatted_texts[result.index]
-                if 0 <= result.index < len(formatted_texts)
-                else ""
-            )
-            success = result.status == "ok"
-            payload = {
-                "original_text": original_text,
-                "success": success,
-                "table": result.table if success else None,
-                "entities": result.entities if success else None,
-                "thinking": result.thinking or None,
-                "error": result.error if not success else None,
-            }
-            f.write(json.dumps(payload, ensure_ascii=False))
-            f.write("\n")
+    if normalized_format == "jsonl":
+        with output_path.open("a", encoding="utf-8") as f:
+            for result in results:
+                original_text = (
+                    formatted_texts[result.index]
+                    if 0 <= result.index < len(formatted_texts)
+                    else ""
+                )
+                success = result.status == "ok"
+                payload = {
+                    "original_text": original_text,
+                    "success": success,
+                    "table": result.table if success else None,
+                    "entities": result.entities if success else None,
+                    "thinking": result.thinking or None,
+                    "error": result.error if not success else None,
+                }
+                f.write(json.dumps(payload, ensure_ascii=False))
+                f.write("\n")
+    else:
+        merged_table = _merge_tsv_tables(
+            [
+                result.table
+                for result in results
+                if result.status == "ok" and result.table
+            ]
+        )
+        output_path.write_text(merged_table, encoding="utf-8")
 
     return len(results)

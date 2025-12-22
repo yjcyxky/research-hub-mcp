@@ -1,3 +1,4 @@
+README.md
 pyproject.toml
 rust_research_py/__init__.py
 rust_research_py.egg-info/PKG-INFO

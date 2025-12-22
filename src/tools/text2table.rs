@@ -93,6 +93,10 @@ pub struct Text2TableBatchInput {
     /// Path to output file
     pub output_file: Option<String>,
 
+    /// Output format ("jsonl" or "tsv")
+    #[serde(default = "default_output_format")]
+    pub output_format: String,
+
     /// Concurrency limit
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
@@ -104,6 +108,10 @@ pub struct Text2TableBatchInput {
 
 fn default_concurrency() -> usize {
     4
+}
+
+fn default_output_format() -> String {
+    "jsonl".to_string()
 }
 
 /// Output of text2table generation
@@ -251,10 +259,20 @@ impl Text2TableTool {
             });
         }
 
-        let output_file = input
-            .output_file
-            .clone()
-            .unwrap_or_else(|| "output.jsonl".to_string());
+        let output_format = input.output_format.trim().to_lowercase();
+        if output_format != "jsonl" && output_format != "tsv" {
+            return Err(crate::Error::InvalidInput {
+                field: "output_format".to_string(),
+                reason: "Output format must be 'jsonl' or 'tsv'".to_string(),
+            });
+        }
+        let output_file = input.output_file.clone().unwrap_or_else(|| {
+            if output_format == "tsv" {
+                "output.tsv".to_string()
+            } else {
+                "output.jsonl".to_string()
+            }
+        });
         if let Err(e) = crate::python_embed::check_python_available() {
             return Err(crate::Error::Service(format!(
                 "Python runtime not available: {e}"
@@ -297,6 +315,7 @@ impl Text2TableTool {
             run_text2table_batch(
                 &input_path,
                 &output_path,
+                &output_format,
                 &input_config.labels,
                 labels_file.as_deref(),
                 input_config.prompt.as_deref(),
