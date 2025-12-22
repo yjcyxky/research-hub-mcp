@@ -325,6 +325,29 @@ impl SourceProvider for SemanticScholarProvider {
         ]
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"Semantic Scholar supports natural language queries:
+- Simple keyword search works well
+- Use quotes for exact phrases
+- Author names are automatically detected
+- fieldsOfStudy filter for specific domains
+- year filter for publication year range
+- openAccessPdf filter for open access only"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("attention is all you need", "Search by paper title"),
+            ("Geoffrey Hinton deep learning", "Author and topic search"),
+            ("transformer neural networks 2017-2023", "Topic with year range"),
+            ("BERT language model", "Search for specific model papers"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("https://api.semanticscholar.org/api-docs/")
+    }
+
     fn supports_full_text(&self) -> bool {
         true // Semantic Scholar provides open access PDFs when available
     }

@@ -273,6 +273,28 @@ impl SourceProvider for SsrnProvider {
         ]
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"SSRN hosts social science and economics preprints:
+- Search by title, author, or keywords
+- Strong in economics, finance, law, social sciences
+- Most papers are free to download
+- Abstract ID can be used for direct lookup
+- Results sorted by relevance or date"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("behavioral economics", "Basic topic search"),
+            ("Eugene Fama market efficiency", "Author with topic"),
+            ("corporate governance 2023", "Topic with year"),
+            ("10.2139/ssrn.1234567", "SSRN DOI lookup"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("https://www.ssrn.com/index.cfm/en/")
+    }
+
     fn supports_full_text(&self) -> bool {
         true // SSRN usually provides free PDFs
     }

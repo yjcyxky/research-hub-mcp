@@ -701,6 +701,28 @@ impl SourceProvider for BiorxivProvider {
         ] // Limited search capabilities
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"bioRxiv supports basic keyword search:
+- Keywords are searched across title and abstract
+- DOI lookup for bioRxiv-specific DOIs (10.1101/*)
+- Date range search through API (recent papers)
+- No advanced field-specific query syntax
+- Results sorted by relevance or date"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("CRISPR gene editing", "Basic keyword search"),
+            ("10.1101/2023.01.01.123456", "DOI lookup"),
+            ("single cell RNA sequencing", "Multi-word topic search"),
+            ("COVID-19 vaccine efficacy", "Timely research topics"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("https://www.biorxiv.org/search")
+    }
+
     fn supports_full_text(&self) -> bool {
         true // bioRxiv provides PDF access for all preprints
     }

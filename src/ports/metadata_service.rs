@@ -4,7 +4,7 @@
 //! This interface abstracts the metadata extraction functionality, allowing different
 //! extraction implementations to be used interchangeably.
 
-use crate::tools::metadata::{MetadataInput, MetadataResult};
+use crate::tools::pdf_metadata::{MetadataInput, MetadataResult};
 use crate::Result;
 use async_trait::async_trait;
 use std::fmt::Debug;
@@ -32,7 +32,7 @@ use std::fmt::Debug;
 /// ```rust
 /// use async_trait::async_trait;
 /// use crate::ports::MetadataServicePort;
-/// use crate::tools::metadata::{MetadataInput, MetadataResult};
+/// use crate::tools::pdf_metadata::{MetadataInput, MetadataResult};
 /// use crate::Result;
 ///
 /// pub struct PdfMetadataAdapter {
@@ -149,7 +149,7 @@ pub trait MetadataServicePort: Send + Sync + Debug {
     /// Individual source failures should be handled gracefully.
     async fn validate_metadata(
         &self,
-        metadata: &crate::tools::metadata::ExtractedMetadata,
+        metadata: &crate::tools::pdf_metadata::ExtractedMetadata,
         sources: Vec<ValidationSource>,
     ) -> Result<ValidationResult>;
 
@@ -206,7 +206,7 @@ pub enum ValidationSource {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ValidationResult {
     /// Updated metadata with validated information
-    pub metadata: crate::tools::metadata::ExtractedMetadata,
+    pub metadata: crate::tools::pdf_metadata::ExtractedMetadata,
     /// Validation success by source
     pub validation_results: std::collections::HashMap<ValidationSource, ValidationStatus>,
     /// Overall validation confidence score

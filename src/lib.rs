@@ -60,7 +60,7 @@ pub mod python_embed;
 // pub use adapters::{
 //     MetaSearchAdapter, MultiProviderAdapter, PaperDownloadAdapter, PdfMetadataAdapter,
 // };
-pub use client::{Doi, MetaSearchClient, MetaSearchConfig, MetaSearchResult, PaperMetadata};
+pub use client::{Doi, MetaSearchClient, MetaSearchConfig, PaperMetadata};
 pub use config::{Config, ConfigOverrides};
 // pub use di::{ServiceContainer, ServiceScope};
 pub use error::{Error, Result};
@@ -75,6 +75,6 @@ pub use resilience::{CircuitBreaker, RetryConfig, RetryPolicy, TimeoutConfig, Ti
 pub use server::Server;
 pub use service::{DaemonConfig, DaemonService, HealthCheck, PidFile, SignalHandler};
 pub use tools::{
-    BibliographyTool, CategorizeTool, CodeSearchTool, DownloadTool, MetadataExtractor,
-    Pdf2TextTool, SearchTool,
+    BibliographyTool, CategorizeTool, CodeSearchTool, DownloadTool, ListSourcesTool,
+    MetadataExtractor, Pdf2TextTool, SearchSourceTool, VerifyMetadataTool,
 };

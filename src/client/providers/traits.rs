@@ -345,6 +345,28 @@ pub trait SourceProvider: Send + Sync {
         false
     }
 
+    /// Returns help text describing the query format for this provider.
+    ///
+    /// This is displayed when users request source-specific search help.
+    fn query_format_help(&self) -> &'static str {
+        "Use standard keyword search. Exact syntax varies by provider."
+    }
+
+    /// Returns example queries demonstrating how to use this provider.
+    ///
+    /// Each tuple is (query_example, description).
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("machine learning", "Basic keyword search")]
+    }
+
+    /// Returns this provider's native query syntax, if different from unified format.
+    ///
+    /// Some providers (ArXiv, PubMed) have specific query languages.
+    /// This method documents that syntax for direct usage.
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Performs a search using this provider.
     ///
     /// This is the core method that executes a search against the provider's API

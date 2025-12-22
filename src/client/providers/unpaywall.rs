@@ -221,6 +221,26 @@ impl SourceProvider for UnpaywallProvider {
         vec![SearchType::Doi] // Unpaywall only supports DOI lookups
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"Unpaywall only supports DOI lookups:
+- Provide a valid DOI to find open access versions
+- Returns best available open access location
+- No keyword or author search supported
+- Use other providers for discovery, Unpaywall for OA access"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("10.1038/nature12373", "Standard DOI lookup"),
+            ("10.1126/science.1157996", "Science journal DOI"),
+            ("10.1371/journal.pone.0000000", "PLOS ONE DOI"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("https://unpaywall.org/products/api")
+    }
+
     fn supports_full_text(&self) -> bool {
         true // Unpaywall specifically finds open access PDFs
     }

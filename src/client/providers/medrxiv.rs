@@ -292,6 +292,28 @@ impl SourceProvider for MedrxivProvider {
         ]
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"medRxiv supports basic keyword search:
+- Keywords are searched across title and abstract
+- DOI lookup for medRxiv-specific DOIs (10.1101/*)
+- Date range search through API (recent papers)
+- No advanced field-specific query syntax
+- Focused on clinical and health sciences preprints"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("COVID-19 clinical trial", "Basic keyword search"),
+            ("10.1101/2023.01.01.23284123", "DOI lookup"),
+            ("diabetes treatment outcomes", "Clinical topic search"),
+            ("vaccine effectiveness real world", "Public health research"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("https://www.medrxiv.org/search")
+    }
+
     fn supports_full_text(&self) -> bool {
         true
     }

@@ -7,7 +7,7 @@ use crate::ports::metadata_service::{
     CacheStatus, MetadataServiceHealth, MetadataServicePort, ProcessingCapabilities,
     SupportedFormat, ValidationResult, ValidationSource, ValidationStatus,
 };
-use crate::tools::metadata::{MetadataExtractor, MetadataInput, MetadataResult};
+use crate::tools::pdf_metadata::{MetadataExtractor, MetadataInput, MetadataResult};
 use crate::{Config, Result};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -98,7 +98,7 @@ impl PdfMetadataAdapter {
     /// Mock validation with external sources
     async fn mock_validate_with_sources(
         &self,
-        metadata: &crate::tools::metadata::ExtractedMetadata,
+        metadata: &crate::tools::pdf_metadata::ExtractedMetadata,
         sources: Vec<ValidationSource>,
     ) -> ValidationResult {
         let mut validation_results = HashMap::new();
@@ -173,7 +173,7 @@ impl MetadataServicePort for PdfMetadataAdapter {
                 Err(e) => {
                     // Create a failed result for this input
                     results.push(MetadataResult {
-                        status: crate::tools::metadata::ExtractionStatus::Failed,
+                        status: crate::tools::pdf_metadata::ExtractionStatus::Failed,
                         metadata: None,
                         error: Some(e.to_string()),
                         processing_time_ms: 0,
@@ -223,7 +223,7 @@ impl MetadataServicePort for PdfMetadataAdapter {
 
     async fn validate_metadata(
         &self,
-        metadata: &crate::tools::metadata::ExtractedMetadata,
+        metadata: &crate::tools::pdf_metadata::ExtractedMetadata,
         sources: Vec<ValidationSource>,
     ) -> Result<ValidationResult> {
         info!("Validating metadata against {} sources", sources.len());
@@ -374,9 +374,9 @@ mod tests {
     async fn test_validate_metadata() {
         let adapter = create_test_adapter();
 
-        let metadata = crate::tools::metadata::ExtractedMetadata {
+        let metadata = crate::tools::pdf_metadata::ExtractedMetadata {
             title: Some("Test Paper".to_string()),
-            authors: vec![crate::tools::metadata::Author {
+            authors: vec![crate::tools::pdf_metadata::Author {
                 name: "John Doe".to_string(),
                 first_name: Some("John".to_string()),
                 last_name: Some("Doe".to_string()),

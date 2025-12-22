@@ -5,11 +5,19 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use rust_research_mcp::{
-    client::{MetaSearchClient, MetaSearchConfig},
+    client::{
+        providers::{
+            ArxivProvider, BiorxivProvider, CoreProvider, CrossRefProvider, GoogleScholarProvider,
+            MdpiProvider, MedrxivProvider, OpenAlexProvider, OpenReviewProvider,
+            PubMedCentralProvider, ResearchGateProvider, SciHubProvider, SemanticScholarProvider,
+            SsrnProvider, UnpaywallProvider,
+        },
+        MetaSearchClient, MetaSearchConfig,
+    },
     tools::{
         download::{DownloadInput, DownloadOutputFormat, DownloadTool},
-        metadata::{MetadataExtractor, MetadataInput},
-        search::{SearchInput, SearchTool, SearchType as ToolSearchType},
+        pdf_metadata::{MetadataExtractor, MetadataInput},
+        search_source::{SearchSourceInput, SearchSourceTool},
     },
     Config, ConfigOverrides,
 };
@@ -43,26 +51,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Search papers by DOI, title, or author
+    /// Search papers from a specific academic source (use 'list-sources' to see available sources)
     Search {
-        /// Query text (DOI, title, author, etc.)
+        /// Query text (use native query syntax for the source)
         query: String,
+        /// Source to search (e.g., arxiv, pubmed_central, semantic_scholar)
+        #[arg(short, long)]
+        source: String,
         /// Max results to return
         #[arg(short, long, default_value_t = 10)]
         limit: u32,
-        /// Offset for pagination
-        #[arg(long, default_value_t = 0)]
-        offset: u32,
-        /// Search mode
-        #[arg(long, value_enum, default_value_t = SearchMode::Auto)]
-        mode: SearchMode,
-        /// Comma-separated list of primary providers to use (e.g., pubmed_central,google_scholar,biorxiv)
-        #[arg(long, value_delimiter = ',')]
-        sources: Option<Vec<String>>,
-        /// Comma-separated list of metadata-only providers (e.g., crossref)
-        #[arg(long, value_delimiter = ',')]
-        metadata_sources: Option<Vec<String>>,
     },
+    /// List available academic sources
+    ListSources,
     /// Download a paper by DOI or direct URL
     Download {
         /// DOI of the paper
@@ -345,27 +346,36 @@ impl BatchOutputFormat {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, ValueEnum)]
-enum SearchMode {
-    Auto,
-    Doi,
-    Title,
-    Author,
-    AuthorYear,
-    TitleAbstract,
-}
+/// Create a search_source tool with all providers registered
+fn create_search_source_tool() -> anyhow::Result<SearchSourceTool> {
+    let mut tool = SearchSourceTool::new();
 
-impl From<SearchMode> for ToolSearchType {
-    fn from(value: SearchMode) -> Self {
-        match value {
-            SearchMode::Auto => Self::Auto,
-            SearchMode::Doi => Self::Doi,
-            SearchMode::Title => Self::Title,
-            SearchMode::Author => Self::Author,
-            SearchMode::AuthorYear => Self::AuthorYear,
-            SearchMode::TitleAbstract => Self::TitleAbstract,
-        }
+    // Register all providers
+    macro_rules! register_provider {
+        ($provider:expr) => {
+            if let Ok(p) = $provider {
+                tool.register_provider(Box::new(p));
+            }
+        };
     }
+
+    register_provider!(ArxivProvider::new());
+    register_provider!(CrossRefProvider::new(None));
+    register_provider!(SemanticScholarProvider::new(None));
+    register_provider!(PubMedCentralProvider::new(None));
+    register_provider!(OpenAlexProvider::new());
+    register_provider!(BiorxivProvider::new());
+    register_provider!(MedrxivProvider::new());
+    register_provider!(OpenReviewProvider::new());
+    register_provider!(CoreProvider::new(None));
+    register_provider!(MdpiProvider::new());
+    register_provider!(SsrnProvider::new());
+    register_provider!(UnpaywallProvider::new_with_default_email());
+    register_provider!(ResearchGateProvider::new());
+    register_provider!(GoogleScholarProvider::new(std::env::var("GOOGLE_SCHOLAR_API_KEY").ok()));
+    register_provider!(SciHubProvider::new());
+
+    Ok(tool)
 }
 
 #[tokio::main]
@@ -395,42 +405,46 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Search {
             query,
+            source,
             limit,
-            offset,
-            mode,
-            sources,
-            metadata_sources,
         } => {
-            let search_tool = SearchTool::new(config.clone())?;
-            let input = SearchInput {
+            let search_tool = create_search_source_tool()?;
+            let input = SearchSourceInput {
+                source: source.clone(),
                 query: query.clone(),
-                search_type: mode.into(),
                 limit,
-                offset,
-                sources,
-                metadata_sources,
+                offset: 0,
+                search_type: None,
+                help: false,
             };
-            let results = search_tool.search_papers(input).await?;
 
-            info!(
-                "Found {} of {} results for '{}'",
-                results.returned_count, results.total_count, query
-            );
-            for (idx, paper) in results.papers.iter().enumerate() {
-                let title = paper
-                    .metadata
-                    .title
-                    .clone()
-                    .unwrap_or_else(|| "No title".into());
-                let doi = paper.metadata.doi.clone();
-                let source = paper.source.clone();
-                info!(
-                    "{}. {} [DOI: {}] (source: {})",
-                    idx + 1,
-                    title,
-                    if doi.is_empty() { "N/A".into() } else { doi },
-                    source
-                );
+            match search_tool.search(input).await {
+                Ok(result) => {
+                    let count = result.total_available.unwrap_or(result.papers.len() as u32);
+                    info!("Found {} results from {} for '{}'", count, source, query);
+                    for (idx, paper) in result.papers.iter().enumerate() {
+                        let title = paper.title.clone().unwrap_or_else(|| "No title".into());
+                        let doi = paper.doi.clone();
+                        info!(
+                            "{}. {} [DOI: {}]",
+                            idx + 1,
+                            title,
+                            if doi.is_empty() { "N/A".into() } else { doi }
+                        );
+                    }
+                }
+                Err(e) => {
+                    error!("Search failed: {}", e);
+                }
+            }
+        }
+        Commands::ListSources => {
+            let tool = create_search_source_tool()?;
+            info!("Available academic sources:");
+            for provider_name in tool.available_sources() {
+                if let Some(info) = tool.get_source_info(&provider_name) {
+                    info!("  {} - {}", info.name, info.description);
+                }
             }
         }
         Commands::Install => {
@@ -508,7 +522,6 @@ async fn main() -> anyhow::Result<()> {
             let meta_input = MetadataInput {
                 file_path: input.clone(),
                 use_cache: false,
-                validate_external: false,
                 extract_references: true,
                 batch_files: None,
             };

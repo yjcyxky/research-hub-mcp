@@ -436,6 +436,31 @@ impl SourceProvider for PubMedCentralProvider {
         ]
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"PubMed Central supports field-specific search using tags:
+- [Title] - Search in title
+- [Author] - Search by author name
+- [Journal] - Search by journal name
+- [Abstract] - Search in abstract
+- [MeSH Terms] - Search using MeSH vocabulary
+- Use AND, OR, NOT for boolean operations
+- Use quotes for exact phrases"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("cancer[Title] AND therapy[Title]", "Search for cancer therapy in titles"),
+            ("Smith J[Author]", "Search by author name"),
+            ("diabetes[MeSH Terms]", "Search using MeSH term"),
+            ("\"machine learning\"[Title/Abstract]", "Exact phrase in title or abstract"),
+            ("COVID-19 AND vaccine", "Boolean search for COVID-19 vaccines"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("https://www.ncbi.nlm.nih.gov/books/NBK3827/#pubmedhelp.How_do_I_search_by_author")
+    }
+
     async fn search(
         &self,
         query: &SearchQuery,

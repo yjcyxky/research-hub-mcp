@@ -316,6 +316,30 @@ impl SourceProvider for OpenAlexProvider {
         ]
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"OpenAlex supports filter-based queries:
+- search - Full-text search across all fields
+- filter=title.search:term - Search in title
+- filter=author.search:name - Search by author
+- filter=publication_year:YYYY - Filter by year
+- filter=concepts.id:C12345 - Filter by concept ID
+- filter=open_access.is_oa:true - Open access only
+- filter=type:journal-article - Filter by type"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("machine learning", "Basic full-text search"),
+            ("climate change 2020-2023", "Topic with year range"),
+            ("author:Einstein", "Search by author name"),
+            ("COVID-19 vaccine efficacy", "Multi-term search"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("https://docs.openalex.org/how-to-use-the-api/get-lists-of-entities/search-entities")
+    }
+
     fn description(&self) -> &'static str {
         "OpenAlex: Open catalog of scholarly papers, authors, venues, and institutions with 240M+ works"
     }

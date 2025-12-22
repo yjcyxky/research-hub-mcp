@@ -1,6 +1,6 @@
 use rust_research_mcp::{
     client::PaperMetadata, services::CategorizationService, tools::categorize::CategorizeInput,
-    CategorizeTool, Config, SearchTool,
+    CategorizeTool, Config, SearchSourceTool,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -283,16 +283,15 @@ async fn test_categorize_tool_disabled() {
 }
 
 #[tokio::test]
-async fn test_search_tool_categorization_integration() {
+async fn test_search_source_tool_categorization_integration() {
     let config = create_test_config();
-    let _search_tool = SearchTool::new(config.clone()).unwrap();
+    let _search_tool = SearchSourceTool::new();
 
-    // Test that search tool was created successfully with categorization enabled
+    // Test that search source tool was created successfully
     // Note: Full integration test would require actual search results
     // This test validates the service is properly integrated during construction
 
-    // We can't access private fields, but we can verify the tool was created
-    // with a config that has categorization enabled
+    // Verify config has categorization enabled
     assert!(
         config.categorization.enabled,
         "Config should have categorization enabled"
@@ -415,9 +414,9 @@ async fn test_categorization_end_to_end_workflow() {
     let result = tool.categorize_papers(input).await.unwrap();
     assert_eq!(result.sanitized_category, "machine_learning");
 
-    // 3. Test search tool integration
-    let _search_tool = SearchTool::new(config.clone()).unwrap();
-    // Search tool was created successfully with categorization config
+    // 3. Test search source tool integration
+    let _search_tool = SearchSourceTool::new();
+    // Search source tool was created successfully
 
     // This validates the complete workflow is properly set up
     // In practice, search results would automatically include categories

@@ -302,6 +302,26 @@ impl SourceProvider for SciHubProvider {
         vec![SearchType::Doi, SearchType::Title, SearchType::Auto]
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"Sci-Hub provides access to papers via DOI:
+- Best used with DOI for direct PDF access
+- Title search has limited accuracy
+- Used as fallback when other sources unavailable
+- Lower priority in search ordering"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("10.1038/nature12373", "DOI lookup"),
+            ("10.1126/science.1157996", "Science article DOI"),
+            ("attention is all you need", "Title search (limited)"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        None // Sci-Hub doesn't have public API documentation
+    }
+
     fn supports_full_text(&self) -> bool {
         true
     }

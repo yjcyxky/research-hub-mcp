@@ -366,6 +366,28 @@ impl SourceProvider for OpenReviewProvider {
         ]
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"OpenReview hosts ML/AI conference papers:
+- Search by title, author, or keywords
+- Covers NeurIPS, ICLR, ICML submissions
+- Includes reviews and discussion
+- venue:NeurIPS - Filter by conference
+- year:YYYY - Filter by year"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("transformer attention mechanism", "Topic search"),
+            ("Geoffrey Hinton", "Author search"),
+            ("NeurIPS 2023 language model", "Conference-specific search"),
+            ("reinforcement learning robotics", "Multi-topic search"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("https://docs.openreview.net/reference/api-v2")
+    }
+
     async fn search(
         &self,
         query: &SearchQuery,

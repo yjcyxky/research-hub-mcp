@@ -514,6 +514,28 @@ impl SourceProvider for MdpiProvider {
         ]
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"MDPI is an open access publisher:
+- Search across all MDPI journals
+- All articles are open access with PDF
+- Filter by journal or subject area
+- Supports keyword and author search
+- Results include full metadata"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("sustainability renewable energy", "Topic search"),
+            ("10.3390/s21041234", "DOI lookup"),
+            ("COVID-19 epidemiology", "Health topic search"),
+            ("machine learning sensors", "Interdisciplinary search"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("https://www.mdpi.com/search")
+    }
+
     async fn search(
         &self,
         query: &SearchQuery,

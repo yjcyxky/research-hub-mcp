@@ -1,6 +1,6 @@
 use rust_research_mcp::client::meta_search::{MetaSearchClient, MetaSearchConfig};
 use rust_research_mcp::tools::download::{DownloadInput, DownloadOutputFormat, DownloadTool};
-use rust_research_mcp::tools::metadata::{MetadataExtractor, MetadataInput};
+use rust_research_mcp::tools::pdf_metadata::{MetadataExtractor, MetadataInput};
 use rust_research_mcp::{Config, Result};
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -50,7 +50,6 @@ async fn test_e2e_download_and_metadata_flow() -> Result<()> {
                 let metadata_input = MetadataInput {
                     file_path: file_path.to_string_lossy().to_string(),
                     use_cache: false,
-                    validate_external: false,
                     extract_references: false,
                     batch_files: None,
                 };
@@ -59,8 +58,8 @@ async fn test_e2e_download_and_metadata_flow() -> Result<()> {
 
                 // Verify the metadata extraction worked
                 match metadata_result.status {
-                    rust_research_mcp::tools::metadata::ExtractionStatus::Success
-                    | rust_research_mcp::tools::metadata::ExtractionStatus::Partial => {
+                    rust_research_mcp::tools::pdf_metadata::ExtractionStatus::Success
+                    | rust_research_mcp::tools::pdf_metadata::ExtractionStatus::Partial => {
                         println!("Metadata extraction successful");
                         if let Some(metadata) = metadata_result.metadata {
                             println!("Extracted title: {:?}", metadata.title);
@@ -105,7 +104,6 @@ async fn test_metadata_extraction_error_handling() -> Result<()> {
     let metadata_input = MetadataInput {
         file_path: "/nonexistent/file.pdf".to_string(),
         use_cache: false,
-        validate_external: false,
         extract_references: false,
         batch_files: None,
     };
@@ -113,7 +111,7 @@ async fn test_metadata_extraction_error_handling() -> Result<()> {
     let result = metadata_extractor.extract_metadata(metadata_input).await?;
     assert!(matches!(
         result.status,
-        rust_research_mcp::tools::metadata::ExtractionStatus::Failed
+        rust_research_mcp::tools::pdf_metadata::ExtractionStatus::Failed
     ));
     assert!(result.error.is_some());
     assert!(result.error.as_ref().unwrap().contains("not found"));
@@ -126,7 +124,6 @@ async fn test_metadata_extraction_error_handling() -> Result<()> {
     let metadata_input = MetadataInput {
         file_path: fake_pdf_path.to_string_lossy().to_string(),
         use_cache: false,
-        validate_external: false,
         extract_references: false,
         batch_files: None,
     };
@@ -134,7 +131,7 @@ async fn test_metadata_extraction_error_handling() -> Result<()> {
     let result = metadata_extractor.extract_metadata(metadata_input).await?;
     assert!(matches!(
         result.status,
-        rust_research_mcp::tools::metadata::ExtractionStatus::Failed
+        rust_research_mcp::tools::pdf_metadata::ExtractionStatus::Failed
     ));
     assert!(result.error.is_some());
 

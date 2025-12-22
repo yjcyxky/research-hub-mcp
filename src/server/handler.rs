@@ -1,3 +1,8 @@
+use crate::client::providers::{
+    ArxivProvider, BiorxivProvider, CoreProvider, CrossRefProvider, GoogleScholarProvider,
+    MdpiProvider, MedrxivProvider, OpenAlexProvider, OpenReviewProvider, PubMedCentralProvider,
+    ResearchGateProvider, SciHubProvider, SemanticScholarProvider, SsrnProvider, UnpaywallProvider,
+};
 use crate::tools::{
     bibliography::BibliographyInput,
     code_search::CodeSearchInput,
@@ -5,12 +10,14 @@ use crate::tools::{
         BatchDownloadInput as ActualBatchDownloadInput, DownloadInput as ActualDownloadInput,
         DownloadOutputFormat,
     },
-    metadata::MetadataInput as ActualMetadataInput,
-    search::{SearchInput as ActualSearchInput, SearchResult},
+    list_sources::{ListSourcesInput, ListSourcesTool},
+    pdf_metadata::MetadataInput as ActualMetadataInput,
+    search_source::{SearchSourceInput, SearchSourceTool},
+    verify_metadata::{VerifyMetadataInput, VerifyMetadataTool},
 };
 use crate::{
     BibliographyTool, CodeSearchTool, Config, DownloadTool, MetaSearchClient, MetadataExtractor,
-    Result, SearchTool,
+    Result,
 };
 use chrono::Utc;
 use rmcp::{
@@ -28,30 +35,12 @@ use std::{
     collections::HashMap,
     future::Future,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::SystemTime,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, instrument};
 
 // Tool input structures
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SearchInput {
-    /// Query string - can be DOI, title, or author name
-    pub query: String,
-    /// Maximum number of results to return (default: 10)
-    #[serde(default = "default_limit")]
-    pub limit: u32,
-    /// Offset for pagination (default: 0)
-    #[serde(default)]
-    pub offset: u32,
-    /// Optional list of primary search sources to use (provider ids)
-    #[serde(default)]
-    pub sources: Option<Vec<String>>,
-    /// Optional list of metadata-only sources
-    #[serde(default)]
-    pub metadata_sources: Option<Vec<String>>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DownloadInput {
     /// DOI or URL of the paper to download
@@ -78,11 +67,13 @@ struct CategoryCacheEntry {
 pub struct ResearchServerHandler {
     #[allow(dead_code)]
     config: Arc<Config>,
-    search_tool: Arc<SearchTool>,
     download_tool: Arc<DownloadTool>,
     metadata_extractor: Arc<MetadataExtractor>,
     code_search_tool: Arc<CodeSearchTool>,
     bibliography_tool: Arc<BibliographyTool>,
+    verify_metadata_tool: Arc<VerifyMetadataTool>,
+    search_source_tool: Arc<SearchSourceTool>,
+    list_sources_tool: Arc<ListSourcesTool>,
     /// Cache of DOI -> Category mappings from recent searches
     category_cache: Arc<RwLock<HashMap<String, CategoryCacheEntry>>>,
 }
@@ -94,9 +85,6 @@ impl ResearchServerHandler {
         // Initialize MetaSearch client with config
         let meta_config = crate::client::MetaSearchConfig::from_config(&config);
         let client = Arc::new(MetaSearchClient::new((*config).clone(), meta_config)?);
-
-        // Initialize search tool
-        let search_tool = SearchTool::new(config.clone())?;
 
         // Initialize download tool
         let download_tool = DownloadTool::new(client, config.clone())?;
@@ -110,13 +98,75 @@ impl ResearchServerHandler {
         // Initialize bibliography tool
         let bibliography_tool = BibliographyTool::new(config.clone())?;
 
+        // Initialize verify metadata tool
+        let verify_metadata_tool = VerifyMetadataTool::new();
+
+        // Initialize search source tool with providers
+        let mut search_source_tool = SearchSourceTool::new();
+
+        // Initialize list sources tool with providers
+        let mut list_sources_tool = ListSourcesTool::new();
+
+        // Register all providers with both tools
+        // Note: Each provider needs to be created twice since Box<dyn SourceProvider>
+        // cannot be cloned (trait objects don't support Clone)
+        macro_rules! register_providers {
+            ($tool:expr, $($provider:expr),+ $(,)?) => {
+                $(
+                    if let Ok(p) = $provider {
+                        $tool.register_provider(Box::new(p));
+                    }
+                )+
+            };
+        }
+
+        register_providers!(
+            search_source_tool,
+            ArxivProvider::new(),
+            CrossRefProvider::new(None),
+            SemanticScholarProvider::new(None),
+            PubMedCentralProvider::new(None),
+            OpenAlexProvider::new(),
+            BiorxivProvider::new(),
+            MedrxivProvider::new(),
+            OpenReviewProvider::new(),
+            CoreProvider::new(None),
+            MdpiProvider::new(),
+            SsrnProvider::new(),
+            UnpaywallProvider::new_with_default_email(),
+            ResearchGateProvider::new(),
+            GoogleScholarProvider::new(std::env::var("GOOGLE_SCHOLAR_API_KEY").ok()),
+            SciHubProvider::new()
+        );
+
+        register_providers!(
+            list_sources_tool,
+            ArxivProvider::new(),
+            CrossRefProvider::new(None),
+            SemanticScholarProvider::new(None),
+            PubMedCentralProvider::new(None),
+            OpenAlexProvider::new(),
+            BiorxivProvider::new(),
+            MedrxivProvider::new(),
+            OpenReviewProvider::new(),
+            CoreProvider::new(None),
+            MdpiProvider::new(),
+            SsrnProvider::new(),
+            UnpaywallProvider::new_with_default_email(),
+            ResearchGateProvider::new(),
+            GoogleScholarProvider::new(std::env::var("GOOGLE_SCHOLAR_API_KEY").ok()),
+            SciHubProvider::new()
+        );
+
         Ok(Self {
             config,
-            search_tool: Arc::new(search_tool),
             download_tool: Arc::new(download_tool),
             metadata_extractor: Arc::new(metadata_extractor),
             code_search_tool: Arc::new(code_search_tool),
             bibliography_tool: Arc::new(bibliography_tool),
+            verify_metadata_tool: Arc::new(verify_metadata_tool),
+            search_source_tool: Arc::new(search_source_tool),
+            list_sources_tool: Arc::new(list_sources_tool),
             category_cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -126,41 +176,6 @@ impl ResearchServerHandler {
     pub async fn ping(&self) -> Result<()> {
         debug!("Ping received - server is healthy");
         Ok(())
-    }
-
-    /// Cache category information from search results
-    async fn cache_paper_categories(&self, results: &SearchResult) {
-        let mut cache = self.category_cache.write().await;
-        let now = SystemTime::now();
-
-        for paper in &results.papers {
-            if !paper.metadata.doi.is_empty() {
-                if let Some(category) = &paper.category {
-                    debug!(
-                        "Caching category '{}' for DOI '{}'",
-                        category, paper.metadata.doi
-                    );
-                    cache.insert(
-                        paper.metadata.doi.clone(),
-                        CategoryCacheEntry {
-                            category: Some(category.clone()),
-                            timestamp: now,
-                        },
-                    );
-                }
-            }
-        }
-
-        // Clean up old entries (older than 1 hour)
-        let one_hour_ago = now - Duration::from_secs(3600);
-        cache.retain(|doi, entry| {
-            if entry.timestamp < one_hour_ago {
-                debug!("Removing expired cache entry for DOI '{}'", doi);
-                false
-            } else {
-                true
-            }
-        });
     }
 
     /// Get cached category for a DOI
@@ -242,29 +257,6 @@ impl ServerHandler for ResearchServerHandler {
                     annotations: None,
                 },
                 Tool {
-                    name: "search_papers".into(),
-                    description: Some("Search for academic papers using DOI, title, or author name".into()),
-                    input_schema: Arc::new(serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Query string - can be DOI, title, or author name"
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "Maximum number of results to return",
-                                "default": 10,
-                                "minimum": 1,
-                                "maximum": 100
-                            }
-                        },
-                        "required": ["query"]
-                    }).as_object().unwrap().clone()),
-                    output_schema: None,
-                    annotations: None,
-                },
-                Tool {
                     name: "download_paper".into(), 
                     description: Some("Download a paper PDF by DOI with plugin fallback. Optionally render Markdown via pdf2text.".into()),
                     input_schema: Arc::new(serde_json::json!({
@@ -298,13 +290,6 @@ impl ServerHandler for ResearchServerHandler {
                     annotations: None,
                 },
                 Tool {
-                    name: "extract_metadata".into(),
-                    description: Some("Extract metadata from PDF files. Single file or batch processing (12 concurrent for batch_files array). Returns title, authors, DOI, abstract, etc.".into()),
-                    input_schema: Arc::new(serde_json::to_value(schemars::schema_for!(ActualMetadataInput)).unwrap().as_object().unwrap().clone()),
-                    output_schema: None,
-                    annotations: None,
-                },
-                Tool {
                     name: "search_code".into(),
                     description: Some("Search for code patterns within downloaded research papers using regex".into()),
                     input_schema: Arc::new(serde_json::to_value(schemars::schema_for!(CodeSearchInput)).unwrap().as_object().unwrap().clone()),
@@ -315,6 +300,35 @@ impl ServerHandler for ResearchServerHandler {
                     name: "generate_bibliography".into(),
                     description: Some("Generate citations from DOIs with parallel fetching (processes unlimited DOIs with 30 concurrent fetches). Supports BibTeX, APA, MLA, Chicago, IEEE, Harvard formats.".into()),
                     input_schema: Arc::new(serde_json::to_value(schemars::schema_for!(BibliographyInput)).unwrap().as_object().unwrap().clone()),
+                    output_schema: None,
+                    annotations: None,
+                },
+                Tool {
+                    name: "verify_metadata".into(),
+                    description: Some("Verify and enrich paper metadata by cross-referencing multiple academic sources (CrossRef, PubMed, Semantic Scholar, OpenAlex). Identifies discrepancies and provides confidence scores.".into()),
+                    input_schema: Arc::new(serde_json::to_value(schemars::schema_for!(VerifyMetadataInput)).unwrap().as_object().unwrap().clone()),
+                    output_schema: None,
+                    annotations: None,
+                },
+                Tool {
+                    name: "search_source".into(),
+                    description: Some("Search a specific academic source using its native query syntax. Use help=true to get query format documentation for any source.".into()),
+                    input_schema: Arc::new(serde_json::to_value(schemars::schema_for!(SearchSourceInput)).unwrap().as_object().unwrap().clone()),
+                    output_schema: None,
+                    annotations: None,
+                },
+                Tool {
+                    name: "list_sources".into(),
+                    description: Some("List all available academic sources with their capabilities, query syntax, and examples. Filter by full_text or metadata_only.".into()),
+                    input_schema: Arc::new(serde_json::to_value(schemars::schema_for!(ListSourcesInput)).unwrap().as_object().unwrap().clone()),
+                    output_schema: None,
+                    annotations: None,
+                },
+                // New: pdf_metadata (replaces extract_metadata)
+                Tool {
+                    name: "pdf_metadata".into(),
+                    description: Some("Extract metadata from PDF files. Single file or batch processing (12 concurrent for batch_files array). Returns title, authors, DOI, abstract, etc.".into()),
+                    input_schema: Arc::new(serde_json::to_value(schemars::schema_for!(ActualMetadataInput)).unwrap().as_object().unwrap().clone()),
                     output_schema: None,
                     annotations: None,
                 },
@@ -335,11 +349,13 @@ impl ServerHandler for ResearchServerHandler {
     ) -> impl Future<Output = std::result::Result<CallToolResult, ErrorData>> + Send + '_ {
         info!("Tool called: {}", request.name);
 
-        let search_tool = Arc::clone(&self.search_tool);
         let download_tool = Arc::clone(&self.download_tool);
         let metadata_extractor = Arc::clone(&self.metadata_extractor);
         let code_search_tool = Arc::clone(&self.code_search_tool);
         let bibliography_tool = Arc::clone(&self.bibliography_tool);
+        let verify_metadata_tool = Arc::clone(&self.verify_metadata_tool);
+        let search_source_tool = Arc::clone(&self.search_source_tool);
+        let list_sources_tool = Arc::clone(&self.list_sources_tool);
 
         async move {
             match request.name.as_ref() {
@@ -356,83 +372,6 @@ impl ServerHandler for ResearchServerHandler {
 
                     Ok(CallToolResult {
                         content: Some(vec![Content::text(format!("Debug echo: {message}"))]),
-                        structured_content: None,
-                        is_error: Some(false),
-                    })
-                }
-                "search_papers" => {
-                    // Simple parsing for simplified schema
-                    let args = request.arguments.unwrap_or_default();
-                    let parse_vec = |key: &str| -> Option<Vec<String>> {
-                        args.get(key).and_then(|v| {
-                            if let Some(arr) = v.as_array() {
-                                Some(
-                                    arr.iter()
-                                        .filter_map(|val| val.as_str().map(str::to_string))
-                                        .collect(),
-                                )
-                            } else {
-                                v.as_str().map(|s| {
-                                    s.split(',')
-                                        .map(|part| part.trim().to_string())
-                                        .filter(|s| !s.is_empty())
-                                        .collect()
-                                })
-                            }
-                        })
-                    };
-                    let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
-                        ErrorData::invalid_params(
-                            "Missing required 'query' parameter".to_string(),
-                            None,
-                        )
-                    })?;
-                    let limit = args
-                        .get("limit")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(10) as u32;
-
-                    let input = ActualSearchInput {
-                        query: query.to_string(),
-                        search_type: crate::tools::search::SearchType::Auto,
-                        limit,
-                        offset: 0,
-                        sources: parse_vec("sources"),
-                        metadata_sources: parse_vec("metadata_sources"),
-                    };
-
-                    let results = search_tool.search_papers(input).await.map_err(|e| {
-                        ErrorData::internal_error(format!("Search failed: {e}"), None)
-                    })?;
-
-                    // Cache the category information for each paper
-                    self.cache_paper_categories(&results).await;
-
-                    Ok(CallToolResult {
-                        content: Some(vec![Content::text(format!("📚 Found {} papers for '{}'\n\n{}\n\n💡 Tip: Papers from {} may be available for download. Very recent papers (2024-2025) might not be available yet.", 
-                            results.returned_count,
-                            results.query,
-                            results.papers.iter().enumerate().map(|(i, p)| {
-                                let doi_info = if p.metadata.doi.is_empty() {
-                                    "\n  ⚠️ No DOI available (cannot download)".to_string()
-                                } else {
-                                    format!("\n  📖 DOI: {doi}", doi = p.metadata.doi)
-                                };
-                                let source_info = format!("\n  🔍 Source: {source}", source = p.source);
-                                let year = p.metadata.year.filter(|y| *y > 0)
-                                    .map(|y| format!("\n  📅 Year: {y}"))
-                                    .unwrap_or_default();
-                                format!("{}. {} (Relevance: {:.0}%){}{}{}",
-                                    i + 1,
-                                    p.metadata.title.as_deref().unwrap_or("No title"),
-                                    p.relevance_score * 100.0,
-                                    doi_info,
-                                    source_info,
-                                    year
-                                )
-                            }).collect::<Vec<_>>().join("\n\n"),
-                            results.papers.iter().filter(|p| !p.metadata.doi.is_empty()).count()
-                        ))]),
                         structured_content: None,
                         is_error: Some(false),
                     })
@@ -763,7 +702,8 @@ impl ServerHandler for ResearchServerHandler {
                         }
                     }
                 }
-                "extract_metadata" => {
+                "pdf_metadata" => {
+                    // New canonical name for extract_metadata
                     let input: ActualMetadataInput = serde_json::from_value(
                         serde_json::Value::Object(request.arguments.unwrap_or_default()),
                     )
@@ -919,6 +859,245 @@ impl ServerHandler for ResearchServerHandler {
                         is_error: Some(false),
                     })
                 }
+                "verify_metadata" => {
+                    let input: VerifyMetadataInput = serde_json::from_value(
+                        serde_json::Value::Object(request.arguments.unwrap_or_default()),
+                    )
+                    .map_err(|e| {
+                        ErrorData::invalid_params(format!("Invalid verify_metadata input: {e}"), None)
+                    })?;
+
+                    let result = verify_metadata_tool.verify(input).await.map_err(|e| {
+                        ErrorData::internal_error(
+                            format!("Metadata verification failed: {e}"),
+                            None,
+                        )
+                    })?;
+
+                    let mut output = format!(
+                        "🔍 Metadata Verification Result\n\nStatus: {:?}\nConfidence: {:.1}%\nTime: {}ms\n",
+                        result.status,
+                        result.overall_confidence * 100.0,
+                        result.total_time_ms
+                    );
+
+                    if !result.source_results.is_empty() {
+                        output.push_str("\n📚 Source Results:\n");
+                        for src in &result.source_results {
+                            output.push_str(&format!(
+                                "• {}: {} (confidence: {:.1}%, {}ms)\n",
+                                src.source,
+                                if src.success { "✓" } else { "✗" },
+                                src.confidence * 100.0,
+                                src.response_time_ms
+                            ));
+                        }
+                    }
+
+                    if let Some(meta) = &result.merged_metadata {
+                        output.push_str("\n📄 Merged Metadata:\n");
+                        if let Some(title) = &meta.title {
+                            output.push_str(&format!("Title: {}\n", title));
+                        }
+                        if !meta.authors.is_empty() {
+                            output.push_str(&format!("Authors: {}\n", meta.authors.join(", ")));
+                        }
+                        if let Some(year) = meta.year {
+                            output.push_str(&format!("Year: {}\n", year));
+                        }
+                        if let Some(journal) = &meta.journal {
+                            output.push_str(&format!("Journal: {}\n", journal));
+                        }
+                        if let Some(doi) = &meta.doi {
+                            output.push_str(&format!("DOI: {}\n", doi));
+                        }
+                    }
+
+                    if !result.discrepancies.is_empty() {
+                        output.push_str("\n⚠️ Discrepancies Found:\n");
+                        for disc in &result.discrepancies {
+                            output.push_str(&format!("• {}: ", disc.field));
+                            for val in &disc.values {
+                                output.push_str(&format!("{}: \"{}\" ", val.source, val.value));
+                            }
+                            output.push('\n');
+                        }
+                    }
+
+                    Ok(CallToolResult {
+                        content: Some(vec![Content::text(output)]),
+                        structured_content: None,
+                        is_error: Some(false),
+                    })
+                }
+                "search_source" => {
+                    let input: SearchSourceInput = serde_json::from_value(
+                        serde_json::Value::Object(request.arguments.unwrap_or_default()),
+                    )
+                    .map_err(|e| {
+                        ErrorData::invalid_params(format!("Invalid search_source input: {e}"), None)
+                    })?;
+
+                    let result = search_source_tool.search(input).await.map_err(|e| {
+                        ErrorData::internal_error(
+                            format!("Source search failed: {e}"),
+                            None,
+                        )
+                    })?;
+
+                    // Check if this is a help request
+                    if let Some(info) = &result.source_info {
+                        let mut output = format!(
+                            "📖 {} Query Help\n\n{}\n\n🔍 Query Format:\n{}\n",
+                            info.name,
+                            info.description,
+                            info.query_format_help
+                        );
+
+                        if !info.query_examples.is_empty() {
+                            output.push_str("\n📝 Examples:\n");
+                            for example in &info.query_examples {
+                                output.push_str(&format!("• {} - {}\n", example.query, example.description));
+                            }
+                        }
+
+                        if !info.supported_search_types.is_empty() {
+                            output.push_str(&format!(
+                                "\n🏷️ Supported Types: {}\n",
+                                info.supported_search_types.join(", ")
+                            ));
+                        }
+
+                        if let Some(syntax) = &info.native_query_syntax {
+                            output.push_str(&format!("\n📚 Native Syntax:\n{}\n", syntax));
+                        }
+
+                        return Ok(CallToolResult {
+                            content: Some(vec![Content::text(output)]),
+                            structured_content: None,
+                            is_error: Some(false),
+                        });
+                    }
+
+                    // Regular search result
+                    let mut output = format!(
+                        "🔎 Search Results from {}\nQuery: \"{}\"\nFound: {} papers",
+                        result.source,
+                        result.query,
+                        result.papers.len()
+                    );
+
+                    if let Some(total) = result.total_available {
+                        output.push_str(&format!(" (of {} total)", total));
+                    }
+                    output.push_str(&format!("\nTime: {}ms\n\n", result.search_time_ms));
+
+                    for (i, paper) in result.papers.iter().enumerate() {
+                        let title = paper.title.as_deref().unwrap_or("Untitled");
+                        let authors = if paper.authors.is_empty() {
+                            "Unknown".to_string()
+                        } else {
+                            paper.authors.join(", ")
+                        };
+                        let year = paper.year.map(|y| y.to_string()).unwrap_or_else(|| "N/A".to_string());
+                        let doi = if paper.doi.is_empty() { "N/A" } else { &paper.doi };
+
+                        output.push_str(&format!(
+                            "{}. {}\n   Authors: {}\n   Year: {}\n   DOI: {}\n\n",
+                            i + 1, title, authors, year, doi
+                        ));
+                    }
+
+                    if result.has_more {
+                        output.push_str("📄 More results available. Use offset parameter to paginate.\n");
+                    }
+
+                    Ok(CallToolResult {
+                        content: Some(vec![Content::text(output)]),
+                        structured_content: None,
+                        is_error: Some(false),
+                    })
+                }
+                "list_sources" => {
+                    let input: ListSourcesInput = serde_json::from_value(
+                        serde_json::Value::Object(request.arguments.unwrap_or_default()),
+                    )
+                    .map_err(|e| {
+                        ErrorData::invalid_params(format!("Invalid list_sources input: {e}"), None)
+                    })?;
+
+                    let result = list_sources_tool.list(input).await.map_err(|e| {
+                        ErrorData::internal_error(
+                            format!("Failed to list sources: {e}"),
+                            None,
+                        )
+                    })?;
+
+                    let mut output = format!(
+                        "📚 Available Academic Sources\n\nTotal: {} sources\n",
+                        result.total
+                    );
+
+                    if result.total == 0 {
+                        output.push_str("\nNo sources available. Check server configuration.\n");
+                    } else {
+                        output.push_str("\n");
+                        for source in &result.sources {
+                            let full_text_badge = if source.supports_full_text {
+                                "📄 Full-text"
+                            } else {
+                                "📋 Metadata-only"
+                            };
+
+                            let health_badge = match source.healthy {
+                                Some(true) => " ✅ Healthy",
+                                Some(false) => " ❌ Unhealthy",
+                                None => "",
+                            };
+
+                            output.push_str(&format!(
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\
+                                🔍 {} (priority: {}){}\n\
+                                {}\n\
+                                {}\n\n\
+                                📝 Query Format:\n{}\n",
+                                source.name,
+                                source.priority,
+                                health_badge,
+                                full_text_badge,
+                                source.description,
+                                source.query_format_help
+                            ));
+
+                            if let Some(examples) = &source.query_examples {
+                                output.push_str("\n💡 Examples:\n");
+                                for example in examples.iter().take(3) {
+                                    output.push_str(&format!(
+                                        "  • {} - {}\n",
+                                        example.query, example.description
+                                    ));
+                                }
+                            }
+
+                            if let Some(syntax_url) = &source.native_query_syntax {
+                                output.push_str(&format!("\n🔗 Syntax Docs: {}\n", syntax_url));
+                            }
+
+                            output.push('\n');
+                        }
+                    }
+
+                    output.push_str(&format!(
+                        "\n🏷️ Available Filters: {}\n",
+                        result.available_filters.join(", ")
+                    ));
+
+                    Ok(CallToolResult {
+                        content: Some(vec![Content::text(output)]),
+                        structured_content: None,
+                        is_error: Some(false),
+                    })
+                }
                 _ => Err(ErrorData::invalid_request(
                     format!("Unknown tool: {}", request.name),
                     None,
@@ -926,11 +1105,6 @@ impl ServerHandler for ResearchServerHandler {
             }
         }
     }
-}
-
-/// Default limit for search results
-const fn default_limit() -> u32 {
-    10
 }
 
 #[cfg(test)]
@@ -953,19 +1127,5 @@ mod tests {
         let handler = create_test_handler();
         let result = handler.ping().await;
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_search_input_validation() {
-        let input = SearchInput {
-            query: "test".to_string(),
-            limit: 10,
-            offset: 0,
-            sources: None,
-            metadata_sources: None,
-        };
-        assert_eq!(input.query, "test");
-        assert_eq!(input.limit, 10);
-        assert_eq!(input.offset, 0);
     }
 }

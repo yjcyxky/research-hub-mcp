@@ -225,6 +225,29 @@ impl SourceProvider for CrossRefProvider {
         ]
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"CrossRef supports bibliographic queries with filters:
+- query.title - Search in title
+- query.author - Search by author
+- query.bibliographic - Full bibliographic search
+- filter=from-pub-date:YYYY - Filter by publication date
+- filter=type:journal-article - Filter by work type
+- filter=has-abstract:true - Only works with abstracts"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("machine learning", "Basic keyword search"),
+            ("10.1038/nature12373", "Direct DOI lookup"),
+            ("Einstein relativity", "Search by author and topic"),
+            ("CRISPR gene editing 2020", "Search with year context"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("https://api.crossref.org/swagger-ui/index.html")
+    }
+
     fn supports_full_text(&self) -> bool {
         false // CrossRef provides metadata, not full text
     }

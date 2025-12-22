@@ -241,6 +241,33 @@ impl SourceProvider for ArxivProvider {
         Duration::from_millis(500) // Fallback for legacy compatibility
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"ArXiv supports field-specific search using prefixes:
+- ti:term - Search in title
+- au:name - Search by author
+- abs:term - Search in abstract
+- cat:cs.AI - Search by category
+- all:term - Search all fields
+
+Boolean operators: AND, OR, ANDNOT (must be uppercase)
+Exact phrases: "quoted text"
+
+Categories: cs.AI, cs.LG, cs.CL, physics.*, math.*, stat.ML, etc."#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("ti:transformer AND au:vaswani", "Title contains 'transformer' by author Vaswani"),
+            ("cat:cs.LG AND abs:reinforcement", "Machine learning papers about reinforcement"),
+            ("all:\"attention mechanism\"", "Exact phrase search across all fields"),
+            ("au:hinton AND ti:deep", "Papers by Hinton with 'deep' in title"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("ArXiv API query format: https://arxiv.org/help/api/user-manual#query_details")
+    }
+
     async fn search(
         &self,
         query: &SearchQuery,
@@ -487,5 +514,183 @@ mod tests {
         let invalid_url = "not-a-valid-url";
         let result = ArxivProvider::resolve_pdf_url(invalid_url);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_query_format_help() {
+        let provider = ArxivProvider::new().unwrap();
+        let help = provider.query_format_help();
+
+        // Should contain key prefixes
+        assert!(help.contains("ti:"));
+        assert!(help.contains("au:"));
+        assert!(help.contains("abs:"));
+        assert!(help.contains("cat:"));
+
+        // Should contain boolean operators
+        assert!(help.contains("AND"));
+        assert!(help.contains("OR"));
+        assert!(help.contains("NOT") || help.contains("ANDNOT"));
+    }
+
+    #[test]
+    fn test_query_examples() {
+        let provider = ArxivProvider::new().unwrap();
+        let examples = provider.query_examples();
+
+        // Should have at least some examples
+        assert!(!examples.is_empty());
+
+        // Each example should have query and description
+        for (query, description) in &examples {
+            assert!(!query.is_empty());
+            assert!(!description.is_empty());
+        }
+
+        // Should include typical arXiv prefixes in examples
+        let all_queries: String = examples.iter().map(|(q, _)| q.to_string()).collect();
+        assert!(all_queries.contains("ti:") || all_queries.contains("au:") || all_queries.contains("cat:"));
+    }
+
+    #[test]
+    fn test_native_query_syntax() {
+        let provider = ArxivProvider::new().unwrap();
+        let syntax = provider.native_query_syntax();
+
+        // ArXiv should have native query syntax documentation
+        assert!(syntax.is_some());
+
+        let syntax_text = syntax.unwrap();
+        // Should mention arXiv's query API
+        assert!(syntax_text.contains("arXiv") || syntax_text.contains("arxiv"));
+    }
+
+    #[test]
+    fn test_supported_search_types() {
+        let provider = ArxivProvider::new().unwrap();
+        let types = provider.supported_search_types();
+
+        // Should support common search types
+        assert!(types.contains(&SearchType::Auto));
+        assert!(types.contains(&SearchType::Title));
+        assert!(types.contains(&SearchType::Author));
+        assert!(types.contains(&SearchType::Keywords));
+    }
+
+    #[test]
+    fn test_provider_name() {
+        let provider = ArxivProvider::new().unwrap();
+        assert_eq!(provider.name(), "arxiv");
+    }
+
+    #[test]
+    fn test_provider_description() {
+        let provider = ArxivProvider::new().unwrap();
+        let desc = provider.description();
+        assert!(!desc.is_empty());
+        assert!(desc.to_lowercase().contains("arxiv") || desc.to_lowercase().contains("preprint"));
+    }
+
+    #[test]
+    fn test_provider_priority() {
+        let provider = ArxivProvider::new().unwrap();
+        let priority = provider.priority();
+        // Priority should be in reasonable range (1-100)
+        assert!(priority >= 1 && priority <= 100);
+    }
+
+    #[test]
+    fn test_title_search_url_building() {
+        let provider = ArxivProvider::new().unwrap();
+
+        let query = SearchQuery {
+            query: "neural networks".to_string(),
+            search_type: SearchType::Title,
+            max_results: 5,
+            offset: 0,
+            params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
+        };
+
+        let url = provider.build_search_url(&query).unwrap();
+        assert!(url.contains("ti:") || url.contains("ti%3A"));
+        assert!(url.contains("neural"));
+    }
+
+    #[test]
+    fn test_author_search_url_building() {
+        let provider = ArxivProvider::new().unwrap();
+
+        let query = SearchQuery {
+            query: "Hinton".to_string(),
+            search_type: SearchType::Author,
+            max_results: 10,
+            offset: 0,
+            params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
+        };
+
+        let url = provider.build_search_url(&query).unwrap();
+        assert!(url.contains("au:") || url.contains("au%3A"));
+        assert!(url.contains("Hinton"));
+    }
+
+    #[test]
+    fn test_subject_search_url_building() {
+        let provider = ArxivProvider::new().unwrap();
+
+        let query = SearchQuery {
+            query: "cs.AI".to_string(),
+            search_type: SearchType::Subject,
+            max_results: 20,
+            offset: 0,
+            params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
+        };
+
+        let url = provider.build_search_url(&query).unwrap();
+        assert!(url.contains("cat:") || url.contains("cat%3A"));
+        assert!(url.contains("cs.AI") || url.contains("cs%2EAI"));
+    }
+
+    #[test]
+    fn test_title_abstract_search_url_building() {
+        let provider = ArxivProvider::new().unwrap();
+
+        let query = SearchQuery {
+            query: "transformer attention".to_string(),
+            search_type: SearchType::TitleAbstract,
+            max_results: 10,
+            offset: 0,
+            params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
+        };
+
+        let url = provider.build_search_url(&query).unwrap();
+        // Should search in both title and abstract
+        assert!(url.contains("ti:") || url.contains("ti%3A") || url.contains("abs:") || url.contains("abs%3A") || url.contains("OR"));
+    }
+
+    #[test]
+    fn test_pagination_in_url() {
+        let provider = ArxivProvider::new().unwrap();
+
+        let query = SearchQuery {
+            query: "test".to_string(),
+            search_type: SearchType::Auto,
+            max_results: 25,
+            offset: 50,
+            params: HashMap::new(),
+            sources: None,
+            metadata_sources: None,
+        };
+
+        let url = provider.build_search_url(&query).unwrap();
+        assert!(url.contains("max_results=25"));
+        assert!(url.contains("start=50"));
     }
 }

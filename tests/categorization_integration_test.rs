@@ -3,7 +3,7 @@ use rust_research_mcp::{
     services::CategorizationService,
     tools::categorize::CategorizeInput,
     tools::download::{DownloadInput, DownloadOutputFormat},
-    CategorizeTool, Config, DownloadTool, MetaSearchClient, SearchTool,
+    CategorizeTool, Config, DownloadTool, MetaSearchClient, SearchSourceTool,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -59,9 +59,9 @@ async fn test_categorization_feature_integration() {
     assert_eq!(result.papers_analyzed, 1);
     assert_eq!(result.abstracts_used, 1);
 
-    // Test 4: Search Tool Integration
-    let _search_tool = SearchTool::new(config.clone()).unwrap();
-    // Search tool created successfully with categorization enabled config
+    // Test 4: Search Source Tool Integration
+    let _search_tool = SearchSourceTool::new();
+    // Search source tool created successfully with categorization enabled config
 
     // Test 5: Download Tool Integration with Categories
     let meta_config = rust_research_mcp::client::MetaSearchConfig::default();

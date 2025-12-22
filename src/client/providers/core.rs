@@ -300,6 +300,30 @@ impl SourceProvider for CoreProvider {
         ]
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"CORE supports advanced search operators:
+- title:term - Search in title field
+- author:name - Search by author name
+- year:YYYY - Filter by publication year
+- doi:value - Search by DOI
+- AND, OR, NOT - Boolean operators
+- "phrase" - Exact phrase matching
+- Parentheses for grouping"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("machine learning", "Basic keyword search"),
+            ("title:neural networks AND author:Hinton", "Field-specific with boolean"),
+            ("climate change year:2023", "Topic with year filter"),
+            ("\"deep learning\" AND (vision OR NLP)", "Phrase with grouping"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("https://core.ac.uk/documentation/api")
+    }
+
     fn supports_full_text(&self) -> bool {
         true // CORE specifically focuses on open access full-text papers
     }

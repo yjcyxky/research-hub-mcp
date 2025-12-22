@@ -1,5 +1,5 @@
 use rust_research_mcp::tools::download::{DownloadInput, DownloadOutputFormat, DownloadTool};
-use rust_research_mcp::tools::search::{SearchInput, SearchTool, SearchType};
+use rust_research_mcp::tools::search_source::{SearchSourceInput, SearchSourceTool};
 use rust_research_mcp::{Config, Error, MetaSearchClient, MetaSearchConfig};
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -8,12 +8,7 @@ use tempfile::TempDir;
 #[tokio::test]
 async fn test_sql_injection_attempts() {
     // Test DOI input for SQL injection patterns
-    let temp_dir = TempDir::new().unwrap();
-    let mut config = Config::default();
-    config.downloads.directory = temp_dir.path().to_path_buf();
-    config.research_source.endpoints = vec!["https://test.com".to_string()];
-
-    let search_tool = SearchTool::new(Arc::new(config.clone())).unwrap();
+    let search_tool = SearchSourceTool::new();
 
     let sql_injection_payloads = vec![
         "'; DROP TABLE papers; --",
@@ -25,15 +20,15 @@ async fn test_sql_injection_attempts() {
     ];
 
     for payload in sql_injection_payloads {
-        let search_input = SearchInput {
+        let search_input = SearchSourceInput {
+            source: "crossref".to_string(),
             query: payload.to_string(),
-            search_type: SearchType::Doi,
             limit: 10,
             offset: 0,
-            sources: None,
-            metadata_sources: None,
+            search_type: Some("doi".to_string()),
+            help: false,
         };
-        let result = search_tool.search_papers(search_input).await;
+        let result = search_tool.search(search_input).await;
         // Should fail validation or return empty results, not crash
         match result {
             Ok(search_result) => assert!(
@@ -49,12 +44,7 @@ async fn test_sql_injection_attempts() {
 #[tokio::test]
 async fn test_xss_injection_attempts() {
     // Test for XSS injection in various inputs
-    let temp_dir = TempDir::new().unwrap();
-    let mut config = Config::default();
-    config.downloads.directory = temp_dir.path().to_path_buf();
-    config.research_source.endpoints = vec!["https://test.com".to_string()];
-
-    let search_tool = SearchTool::new(Arc::new(config.clone())).unwrap();
+    let search_tool = SearchSourceTool::new();
 
     let xss_payloads = vec![
         "<script>alert('xss')</script>",
@@ -66,15 +56,15 @@ async fn test_xss_injection_attempts() {
     ];
 
     for payload in xss_payloads {
-        let search_input = SearchInput {
+        let search_input = SearchSourceInput {
+            source: "arxiv".to_string(),
             query: payload.to_string(),
-            search_type: SearchType::Title,
             limit: 10,
             offset: 0,
-            sources: None,
-            metadata_sources: None,
+            search_type: Some("title".to_string()),
+            help: false,
         };
-        let result = search_tool.search_papers(search_input).await;
+        let result = search_tool.search(search_input).await;
         // Should not execute any scripts, should be properly escaped/validated
         match result {
             Ok(search_result) => assert!(
@@ -146,37 +136,32 @@ async fn test_path_traversal_attempts() {
 #[tokio::test]
 async fn test_large_input_dos_attempts() {
     // Test for denial of service through large inputs
-    let temp_dir = TempDir::new().unwrap();
-    let mut config = Config::default();
-    config.downloads.directory = temp_dir.path().to_path_buf();
-    config.research_source.endpoints = vec!["https://test.com".to_string()];
-
-    let search_tool = SearchTool::new(Arc::new(config.clone())).unwrap();
+    let search_tool = SearchSourceTool::new();
 
     // Very large search query (10MB)
     let large_query = "A".repeat(10 * 1024 * 1024);
-    let search_input = SearchInput {
+    let search_input = SearchSourceInput {
+        source: "arxiv".to_string(),
         query: large_query,
-        search_type: SearchType::Title,
         limit: 10,
         offset: 0,
-        sources: None,
-        metadata_sources: None,
+        search_type: Some("title".to_string()),
+        help: false,
     };
-    let result = search_tool.search_papers(search_input).await;
+    let result = search_tool.search(search_input).await;
     assert!(result.is_err(), "Extremely large query should be rejected");
 
     // Very long DOI
     let long_doi = format!("10.1000/{}", "x".repeat(10000));
-    let search_input = SearchInput {
+    let search_input = SearchSourceInput {
+        source: "crossref".to_string(),
         query: long_doi,
-        search_type: SearchType::Doi,
         limit: 10,
         offset: 0,
-        sources: None,
-        metadata_sources: None,
+        search_type: Some("doi".to_string()),
+        help: false,
     };
-    let result = search_tool.search_papers(search_input).await;
+    let result = search_tool.search(search_input).await;
     assert!(result.is_err(), "Extremely long DOI should be rejected");
 }
 
@@ -190,7 +175,7 @@ async fn test_null_byte_injection() {
 
     let meta_config = MetaSearchConfig::default();
     let meta_client = Arc::new(MetaSearchClient::new(config.clone(), meta_config).unwrap());
-    let search_tool = SearchTool::new(Arc::new(config.clone())).unwrap();
+    let search_tool = SearchSourceTool::new();
     let download_tool = DownloadTool::new(meta_client.clone(), Arc::new(config.clone())).unwrap();
 
     let null_byte_payloads = vec![
@@ -202,15 +187,15 @@ async fn test_null_byte_injection() {
 
     for payload in null_byte_payloads {
         // Test in search
-        let search_input = SearchInput {
+        let search_input = SearchSourceInput {
+            source: "crossref".to_string(),
             query: payload.to_string(),
-            search_type: SearchType::Doi,
             limit: 10,
             offset: 0,
-            sources: None,
-            metadata_sources: None,
+            search_type: Some("doi".to_string()),
+            help: false,
         };
-        let search_result = search_tool.search_papers(search_input).await;
+        let search_result = search_tool.search(search_input).await;
         if search_result.is_ok() {
             let search_result = search_result.unwrap();
             assert!(
@@ -252,7 +237,7 @@ async fn test_command_injection_attempts() {
 
     let meta_config = MetaSearchConfig::default();
     let meta_client = Arc::new(MetaSearchClient::new(config.clone(), meta_config).unwrap());
-    let search_tool = SearchTool::new(Arc::new(config.clone())).unwrap();
+    let search_tool = SearchSourceTool::new();
     let download_tool = DownloadTool::new(meta_client.clone(), Arc::new(config.clone())).unwrap();
 
     let command_injection_payloads = vec![
@@ -267,15 +252,15 @@ async fn test_command_injection_attempts() {
 
     for payload in command_injection_payloads {
         // Test in search queries
-        let search_input = SearchInput {
+        let search_input = SearchSourceInput {
+            source: "arxiv".to_string(),
             query: payload.to_string(),
-            search_type: SearchType::Title,
             limit: 10,
             offset: 0,
-            sources: None,
-            metadata_sources: None,
+            search_type: Some("title".to_string()),
+            help: false,
         };
-        let search_result = search_tool.search_papers(search_input).await;
+        let search_result = search_tool.search(search_input).await;
         if search_result.is_ok() {
             let search_result = search_result.unwrap();
             assert!(
@@ -338,7 +323,7 @@ async fn test_unicode_handling() {
 
     let meta_config = MetaSearchConfig::default();
     let meta_client = Arc::new(MetaSearchClient::new(config.clone(), meta_config).unwrap());
-    let search_tool = SearchTool::new(Arc::new(config.clone())).unwrap();
+    let search_tool = SearchSourceTool::new();
     let download_tool = DownloadTool::new(meta_client.clone(), Arc::new(config.clone())).unwrap();
 
     let unicode_payloads = vec![
@@ -349,15 +334,15 @@ async fn test_unicode_handling() {
 
     for payload in unicode_payloads {
         // Test in search - should handle Unicode gracefully
-        let search_input = SearchInput {
+        let search_input = SearchSourceInput {
+            source: "arxiv".to_string(),
             query: payload.to_string(),
-            search_type: SearchType::Title,
             limit: 10,
             offset: 0,
-            sources: None,
-            metadata_sources: None,
+            search_type: Some("title".to_string()),
+            help: false,
         };
-        let _search_result = search_tool.search_papers(search_input).await;
+        let _search_result = search_tool.search(search_input).await;
         // Should not crash, may return empty results or error
 
         // Test in filename - should validate properly

@@ -1310,181 +1310,60 @@ impl DownloadTool {
             debug!("🆔 Starting DOI-based resolution for: {}", doi_str);
             info!("Attempting to download paper with DOI: {}", doi_str);
 
-            // Create a search query for the DOI
-            debug!("🔍 Creating search query for DOI resolution");
-            let search_query = crate::client::providers::SearchQuery {
-                query: doi_str.clone(),
-                search_type: crate::client::providers::SearchType::Doi,
-                max_results: 1,
-                offset: 0,
-                params: HashMap::new(),
-                sources: None,
-                metadata_sources: None,
-            };
-            debug!("🔍 Search query created - type: DOI, max_results: 1");
+            // First, try to get paper metadata via DOI cascade lookup
+            debug!("🔍 Attempting DOI lookup across providers");
+            let paper = match self.client.get_by_doi(doi_str).await {
+                Ok(Some(paper)) => {
+                    debug!("✅ DOI lookup successful - found paper metadata");
+                    debug!(
+                        "📄 Paper: {:?}",
+                        paper.title.as_ref().map(|t| if t.len() > 50 { &t[..50] } else { t })
+                    );
 
-            // Use the meta search client to find papers across ALL providers
-            debug!("🔎 Executing meta-search across all providers");
-            let search_result = match self.client.search(&search_query).await {
-                Ok(result) => {
-                    debug!("✅ Meta-search completed successfully");
-                    debug!("📊 Search stats - papers: {}, successful_providers: {}, failed_providers: {}",
-                           result.papers.len(), result.successful_providers, result.failed_providers);
-                    result
+                    // Check if the paper already has a PDF URL
+                    if let Some(pdf_url) = &paper.pdf_url {
+                        if !pdf_url.is_empty() {
+                            debug!("✅ Direct PDF URL found in metadata");
+                            info!("Found PDF URL directly from DOI lookup: {}", pdf_url);
+                            return Ok((pdf_url.clone(), Some(paper)));
+                        }
+                    }
+                    Some(paper)
+                }
+                Ok(None) => {
+                    debug!("⚠️ DOI lookup returned no results");
+                    None
                 }
                 Err(e) => {
-                    debug!("❌ Meta-search failed: {}", e);
-                    debug!("🔧 Search error type: {:?}", std::any::type_name_of_val(&e));
-                    return Err(e.into());
+                    debug!("⚠️ DOI lookup failed: {}", e);
+                    warn!("DOI lookup failed with error: {}", e);
+                    None
                 }
             };
 
-            info!(
-                "Meta-search found {} papers from {} providers",
-                search_result.papers.len(),
-                search_result.successful_providers
-            );
-
-            // Log detailed provider results
-            debug!("📋 Provider breakdown:");
-            for (source, papers) in &search_result.by_source {
-                debug!("• {}: {} papers", source, papers.len());
-                if !papers.is_empty() {
-                    for (i, paper) in papers.iter().enumerate().take(2) {
-                        // Log first 2 papers max
-                        debug!(
-                            "  [{}] Title: {:?}, PDF URL present: {}",
-                            i + 1,
-                            paper
-                                .title
-                                .as_ref()
-                                .map(|t| if t.len() > 50 { &t[..50] } else { t }),
-                            paper.pdf_url.as_ref().map_or(false, |url| !url.is_empty())
-                        );
-                    }
-                }
-            }
-
-            // First, look for any paper with a non-empty PDF URL already available
-            debug!("🔍 Looking for papers with direct PDF URLs");
-            let paper_with_pdf = search_result
-                .papers
-                .iter()
-                .enumerate()
-                .find_map(|(i, paper)| {
-                    let has_pdf = paper
-                        .pdf_url
-                        .as_ref()
-                        .map(|url| !url.is_empty())
-                        .unwrap_or(false);
-                    debug!("  Paper {}: PDF URL available: {}", i + 1, has_pdf);
-                    if has_pdf {
-                        debug!("  ✅ Found paper with direct PDF URL at index {}", i);
-                        Some(paper.clone())
-                    } else {
-                        None
-                    }
-                });
-
-            if let Some(paper) = paper_with_pdf {
-                if let Some(pdf_url) = &paper.pdf_url {
-                    if !pdf_url.is_empty() {
-                        debug!("✅ Direct PDF URL found - length: {} chars", pdf_url.len());
-                        debug!("🔗 URL source: direct provider response");
-                        info!("Found PDF URL directly from provider: {}", pdf_url);
-                        return Ok((pdf_url.clone(), Some(paper)));
-                    }
-                    debug!("⚠️ Paper has PDF URL field but it's empty - data inconsistency");
-                    warn!("Paper has PDF URL but it's empty - this shouldn't happen!");
-                } else {
-                    debug!("⚠️ Paper found but pdf_url field is None");
-                }
-            } else {
-                debug!("🔍 No papers with direct PDF URLs found in search results");
-            }
-
-            // If no direct PDF URL, try cascade approach through each provider
-            debug!("🔄 Initiating cascade retrieval approach");
-            info!("No direct PDF URL found, attempting cascade retrieval through all providers");
-
-            // Log what we found from each source
-            debug!("📋 Logging detailed source analysis:");
-            for (source, papers) in &search_result.by_source {
-                if !papers.is_empty() {
-                    debug!(
-                        "• Provider '{}' found {} paper(s) but no PDF URL",
-                        source,
-                        papers.len()
-                    );
-                    info!("Provider '{}' found paper metadata but no PDF URL", source);
-                    for paper in papers {
-                        debug!(
-                            "    - Title: {:?}",
-                            paper
-                                .title
-                                .as_ref()
-                                .map(|t| if t.len() > 60 { &t[..60] } else { t })
-                        );
-                        debug!(
-                            "    - Authors: {:?}",
-                            paper.authors.iter().take(3).collect::<Vec<_>>()
-                        );
-                        debug!("    - Year: {:?}", paper.year);
-                    }
-                } else {
-                    debug!("• Provider '{}' returned no results", source);
-                }
-            }
-
             // Try cascade PDF retrieval through all providers
-            debug!("🔄 Executing cascade retrieval for DOI: {}", doi_str);
+            debug!("🔄 Executing cascade PDF retrieval for DOI: {}", doi_str);
             match self.client.get_pdf_url_cascade(doi_str).await {
                 Ok(Some(pdf_url)) => {
                     debug!("✅ Cascade retrieval SUCCESS! PDF URL obtained");
                     debug!("🔗 PDF URL length: {} chars", pdf_url.len());
-                    debug!(
-                        "📄 Using metadata from first search result: {}",
-                        search_result.papers.first().is_some()
-                    );
                     info!("Cascade retrieval successful! Found PDF URL: {}", pdf_url);
-                    // Use the first paper's metadata if available
-                    let metadata = search_result.papers.first().cloned();
-                    return Ok((pdf_url, metadata));
+                    return Ok((pdf_url, paper));
                 }
                 Ok(None) => {
                     debug!("❌ Cascade retrieval completed but returned None");
-                    debug!("📝 This means all providers were checked but no PDF was found");
                     info!("Cascade retrieval completed but no PDF found in any provider");
                 }
                 Err(e) => {
                     debug!("❌ Cascade retrieval failed with error: {}", e);
-                    debug!(
-                        "🔧 Cascade error type: {:?}",
-                        std::any::type_name_of_val(&e)
-                    );
                     warn!("Cascade retrieval failed with error: {}", e);
                 }
             }
 
             // If cascade also failed, return detailed error with metadata
             debug!("❌ All retrieval methods exhausted - preparing detailed error response");
-            if let Some(paper) = search_result.papers.first() {
-                debug!("📄 Paper metadata found, checking for data inconsistencies");
-                // Check if any paper has an empty PDF URL (shouldn't happen, but let's be safe)
-                if let Some(empty_url_paper) = search_result.papers.iter().find(|p| {
-                    p.pdf_url
-                        .as_ref()
-                        .map(|url| url.is_empty())
-                        .unwrap_or(false)
-                }) {
-                    debug!("⚠️ Data inconsistency detected - paper with empty PDF URL field");
-                    warn!(
-                        "Found paper with empty PDF URL - this shouldn't happen! Paper: {:?}",
-                        empty_url_paper
-                    );
-                }
-
-                debug!("📋 Preparing detailed error message with paper metadata");
+            if let Some(paper) = paper {
+                debug!("📄 Paper metadata found");
                 debug!(
                     "📄 Paper details - Title: {:?}, Authors: {:?}, Year: {:?}",
                     paper.title, paper.authors, paper.year
@@ -1492,7 +1371,7 @@ impl DownloadTool {
 
                 let error_msg = format!(
                     "📄 Paper Metadata Found but No PDF Available\n\n\
-                    The paper was successfully located in {} academic database(s), but none provided a downloadable PDF link.\n\n\
+                    The paper was successfully located in academic databases, but none provided a downloadable PDF link.\n\n\
                     📚 Paper Details:\n\
                     • Title: '{}'\n\
                     • Authors: {}\n\
@@ -1511,16 +1390,10 @@ impl DownloadTool {
                     4. Contact the authors for a copy\n\
                     5. Check ResearchGate or Academia.edu\n\
                     6. Look for related open-access papers by the same authors",
-                    search_result.successful_providers,
                     paper.title.as_ref().unwrap_or(&"Unknown title".to_string()),
                     if paper.authors.is_empty() { "Unknown authors".to_string() } else { paper.authors.join(", ") },
                     paper.year.map_or("Unknown year".to_string(), |y| y.to_string()),
                     doi_str
-                );
-
-                debug!(
-                    "📝 Generated error message length: {} chars",
-                    error_msg.len()
                 );
 
                 debug!("❌ Returning ServiceUnavailable error for PDF Download");
@@ -1530,20 +1403,10 @@ impl DownloadTool {
                 })
             } else {
                 debug!("❌ No paper metadata found in any provider");
-                debug!(
-                    "📊 Search summary - successful: {}, failed: {}, total checked: {}",
-                    search_result.successful_providers,
-                    search_result.failed_providers,
-                    search_result.successful_providers + search_result.failed_providers
-                );
 
                 let error_msg = format!(
                     "🔍 Paper Not Found in Academic Databases\n\n\
-                    The DOI '{}' was not found in any of the {} academic databases we searched.\n\n\
-                    📊 Search Summary:\n\
-                    • Databases checked: {}\n\
-                    • Databases that responded: {}\n\
-                    • Databases that failed: {}\n\n\
+                    The DOI '{}' was not found in any of the academic databases we searched.\n\n\
                     💡 This could mean:\n\
                     • The DOI is incorrect or mistyped\n\
                     • The paper is very new and not yet indexed\n\
@@ -1551,23 +1414,16 @@ impl DownloadTool {
                     • The DOI was registered but the paper was never published\n\n\
                     🔧 Try These Steps:\n\
                     1. Double-check the DOI format (should be like '10.1000/example')\n\
-                    2. Search by paper title instead of DOI\n\
+                    2. Search by paper title using 'search_source' tool\n\
                     3. Check the original source where you found this DOI\n\
                     4. Try searching Google Scholar directly\n\
                     5. Contact the publisher or authors for verification",
-                    doi_str,
-                    search_result.successful_providers + search_result.failed_providers,
-                    search_result.successful_providers + search_result.failed_providers,
-                    search_result.successful_providers,
-                    search_result.failed_providers
+                    doi_str
                 );
 
-                debug!(
-                    "❌ Returning ServiceUnavailable error for MetaSearch: {}",
-                    error_msg
-                );
+                debug!("❌ Returning ServiceUnavailable error for DOI Lookup");
                 Err(crate::Error::ServiceUnavailable {
-                    service: "MetaSearch".to_string(),
+                    service: "DOI Lookup".to_string(),
                     reason: error_msg,
                 })
             }

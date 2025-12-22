@@ -154,6 +154,25 @@ impl SourceProvider for ResearchGateProvider {
         vec![SearchType::Auto, SearchType::Title, SearchType::Author]
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"ResearchGate has limited search due to ToS:
+- URL extraction supported for paper metadata
+- General search disabled to respect terms of service
+- Use for extracting metadata from ResearchGate URLs
+- PDFs require authentication (not available)"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("https://www.researchgate.net/publication/...", "Extract from URL"),
+            ("machine learning", "Limited keyword search (may be empty)"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("https://www.researchgate.net/search")
+    }
+
     async fn search(
         &self,
         query: &SearchQuery,

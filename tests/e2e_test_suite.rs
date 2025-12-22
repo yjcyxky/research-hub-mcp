@@ -10,10 +10,10 @@ use rust_research_mcp::{
     server::ResearchServerHandler,
     tools::{
         download::{DownloadInput as ActualDownloadInput, DownloadOutputFormat},
-        metadata::MetadataInput as ActualMetadataInput,
-        search::{SearchInput as ActualSearchInput, SearchType as ToolSearchType},
+        pdf_metadata::MetadataInput as ActualMetadataInput,
+        search_source::{SearchSourceInput, SearchSourceTool},
     },
-    Config, DownloadTool, MetadataExtractor, SearchTool,
+    Config, DownloadTool, MetadataExtractor, SearchSourceTool as RootSearchSourceTool,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -272,80 +272,43 @@ async fn test_meta_search_client() {
     let client = MetaSearchClient::new((*config).clone(), meta_config)
         .expect("Failed to create MetaSearchClient");
 
-    // Test search across all providers
-    let query = SearchQuery {
-        query: "artificial intelligence".to_string(),
-        search_type: SearchType::Keywords,
-        max_results: 10,
+    // Test provider list
+    let providers = client.providers();
+    assert!(!providers.is_empty(), "Should have at least one provider");
+
+    // Test health check
+    let health = client.health_check().await;
+    assert!(!health.is_empty(), "Health check should return results");
+
+    info!("MetaSearchClient providers: {:?}", providers);
+    info!("Health check results: {:?}", health);
+}
+
+#[tokio::test]
+async fn test_search_source_tool() {
+    let search_tool = SearchSourceTool::new();
+
+    // Test search with auto type detection
+    let input = SearchSourceInput {
+        source: "arxiv".to_string(),
+        query: "machine learning".to_string(),
+        limit: 5,
         offset: 0,
-        params: HashMap::new(),
-        sources: None,
-        metadata_sources: None,
+        search_type: None,
+        help: false,
     };
 
-    let result = client.search(&query).await;
+    let result = search_tool.search(input).await;
 
     match result {
         Ok(search_result) => {
             info!(
-                "Meta search found {} papers from {} providers",
-                search_result.papers.len(),
-                search_result.successful_providers
+                "Search source tool found {} papers",
+                search_result.papers.len()
             );
-
-            // Should have results from multiple providers
-            assert!(search_result.successful_providers > 0);
-
-            // Check deduplication
-            let mut seen_dois = std::collections::HashSet::new();
-            for paper in &search_result.papers {
-                if !paper.doi.is_empty() {
-                    assert!(seen_dois.insert(paper.doi.clone()), "Duplicate DOI found");
-                }
-            }
         }
         Err(e) => {
-            panic!("Meta search failed: {}", e);
-        }
-    }
-}
-
-#[tokio::test]
-async fn test_search_tool() {
-    let config = create_test_config();
-    let search_tool = SearchTool::new(config).expect("Failed to create SearchTool");
-
-    // Test search with auto type detection
-    let input = ActualSearchInput {
-        query: "10.1038/nature12373".to_string(),
-        search_type: ToolSearchType::Auto,
-        limit: 1,
-        offset: 0,
-        sources: None,
-        metadata_sources: None,
-    };
-
-    let result = search_tool.search_papers(input).await;
-
-    match result {
-        Ok(search_result) => {
-            info!("Search tool found {} papers", search_result.returned_count);
-
-            if search_result.returned_count > 0 {
-                let paper = &search_result.papers[0];
-                info!("Found paper with DOI: '{}'", paper.metadata.doi);
-                // Auto-detection should recognize this as a DOI search and return valid results
-                // The exact DOI returned may vary depending on provider behavior, but should be valid
-                assert!(
-                    !paper.metadata.doi.is_empty() && paper.metadata.doi.starts_with("10."),
-                    "Expected a valid DOI starting with '10.', but got: '{}'",
-                    paper.metadata.doi
-                );
-                info!("✓ Search tool successfully found papers with DOI auto-detection");
-            }
-        }
-        Err(e) => {
-            info!("Search tool failed (network may be offline): {}", e);
+            info!("Search source tool failed (network may be offline): {}", e);
         }
     }
 }
@@ -404,7 +367,6 @@ async fn test_metadata_extractor() {
     let input = ActualMetadataInput {
         file_path: "/tmp/test.pdf".to_string(),
         use_cache: false,
-        validate_external: false,
         extract_references: false,
         batch_files: None,
     };
@@ -560,50 +522,37 @@ async fn test_rate_limiting() {
 }
 
 #[tokio::test]
-async fn test_error_handling() {
-    let config = create_test_config();
-    let search_tool = SearchTool::new(config).expect("Failed to create SearchTool");
+async fn test_search_source_error_handling() {
+    let search_tool = SearchSourceTool::new();
 
-    // Test with empty query
-    let empty_input = ActualSearchInput {
-        query: "".to_string(),
-        search_type: ToolSearchType::Auto,
+    // Test with unknown source
+    let unknown_source = SearchSourceInput {
+        source: "unknown_provider".to_string(),
+        query: "test".to_string(),
         limit: 10,
         offset: 0,
-        sources: None,
-        metadata_sources: None,
+        search_type: None,
+        help: false,
     };
 
-    let result = search_tool.search_papers(empty_input).await;
-
-    // Empty query might return empty results or error
-    match result {
-        Ok(search_result) => {
-            assert_eq!(
-                search_result.returned_count, 0,
-                "Empty query should return no results"
-            );
-        }
-        Err(e) => {
-            info!("Empty query properly rejected: {}", e);
-        }
-    }
-
-    // Test with invalid limit
-    let invalid_limit = ActualSearchInput {
-        query: "test".to_string(),
-        search_type: ToolSearchType::Auto,
-        limit: 0, // Invalid
-        offset: 0,
-        sources: None,
-        metadata_sources: None,
-    };
-
-    let result = search_tool.search_papers(invalid_limit).await;
+    let result = search_tool.search(unknown_source).await;
     assert!(
-        result.is_err() || result.unwrap().returned_count == 0,
-        "Invalid limit should fail or return no results"
+        result.is_err(),
+        "Should fail with unknown source provider"
     );
+
+    // Test help mode (should not fail)
+    let help_input = SearchSourceInput {
+        source: "arxiv".to_string(),
+        query: "".to_string(),
+        limit: 10,
+        offset: 0,
+        search_type: None,
+        help: true,
+    };
+
+    let result = search_tool.search(help_input).await;
+    assert!(result.is_ok(), "Help mode should succeed");
 }
 
 #[cfg(test)]
@@ -614,23 +563,23 @@ mod integration_tests {
     async fn test_full_search_download_flow() {
         let config = create_test_config();
 
-        // 1. Search for a paper
-        let search_tool = SearchTool::new(config.clone()).expect("Failed to create SearchTool");
-        let search_input = ActualSearchInput {
+        // 1. Search for a paper using SearchSourceTool
+        let search_tool = SearchSourceTool::new();
+        let search_input = SearchSourceInput {
+            source: "crossref".to_string(),
             query: "10.1038/nature12373".to_string(),
-            search_type: ToolSearchType::Doi,
             limit: 1,
             offset: 0,
-            sources: None,
-            metadata_sources: None,
+            search_type: Some("doi".to_string()),
+            help: false,
         };
 
-        let search_result = search_tool.search_papers(search_input).await;
+        let search_result = search_tool.search(search_input).await;
 
         if let Ok(result) = search_result {
-            if result.returned_count > 0 {
+            if !result.papers.is_empty() {
                 let paper = &result.papers[0];
-                info!("Found paper: {:?}", paper.metadata.title);
+                info!("Found paper: {:?}", paper.title);
 
                 // 2. Try to download it
                 let meta_config = MetaSearchConfig::default();
@@ -642,7 +591,7 @@ mod integration_tests {
                     .expect("Failed to create DownloadTool");
 
                 let download_input = ActualDownloadInput {
-                    doi: Some(paper.metadata.doi.clone()),
+                    doi: Some(paper.doi.clone()),
                     url: None,
                     filename: Some("test_integration.pdf".to_string()),
                     directory: Some("/tmp".to_string()),
@@ -672,9 +621,6 @@ mod integration_tests {
                         info!("Download failed (expected for some papers): {}", e);
                     }
                 }
-
-                // 3. Extract metadata (if we have a downloaded file)
-                // Skip metadata extraction since it requires an actual PDF file
             }
         }
     }

@@ -33,8 +33,11 @@ dependencies = [
 ]
 
 [project.scripts]
-text2table-server = "rust_research_py.text2table.server:main"
+t2t-server = "rust_research_py.text2table.server:main"
+t2t = "rust_research_py.text2table.cli:main"
 pdf2text = "rust_research_py.pdf2text.cli:cli"
+# Deprecated aliases (will be removed in future version)
+text2table-server = "rust_research_py.text2table.server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

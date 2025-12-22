@@ -121,6 +121,29 @@ impl SourceProvider for GoogleScholarProvider {
         ]
     }
 
+    fn query_format_help(&self) -> &'static str {
+        r#"Google Scholar supports natural language queries:
+- Comprehensive academic search coverage
+- author:name - Search by author
+- intitle:term - Search in title only
+- "phrase" - Exact phrase matching
+- site:domain - Limit to specific site
+- Requires GOOGLE_SCHOLAR_API_KEY (SerpAPI)"#
+    }
+
+    fn query_examples(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("machine learning neural networks", "Basic keyword search"),
+            ("author:\"Geoffrey Hinton\" deep learning", "Author-specific search"),
+            ("intitle:transformer attention", "Title search"),
+            ("\"attention is all you need\"", "Exact phrase search"),
+        ]
+    }
+
+    fn native_query_syntax(&self) -> Option<&'static str> {
+        Some("https://scholar.google.com/intl/en/scholar/help.html")
+    }
+
     fn supports_full_text(&self) -> bool {
         true
     }

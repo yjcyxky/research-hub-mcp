@@ -17,7 +17,6 @@
 //!
 //! ```no_run
 //! use knowledge_accumulator_mcp::client::{MetaSearchClient, MetaSearchConfig};
-//! use knowledge_accumulator_mcp::client::providers::{SearchQuery, SearchType};
 //! use knowledge_accumulator_mcp::Config;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,19 +24,19 @@
 //! let meta_config = MetaSearchConfig::default();
 //! let client = MetaSearchClient::new(config, meta_config)?;
 //!
-//! let query = SearchQuery {
-//!     query: "machine learning".to_string(),
-//!     search_type: SearchType::Keywords,
-//!     max_results: 10,
-//!     offset: 0,
-//!     params: std::collections::HashMap::new(),
-//!     sources: None,
-//!     metadata_sources: None,
-//! };
+//! // Get available providers
+//! let providers = client.providers();
+//! println!("Available providers: {:?}", providers);
 //!
-//! let results = client.search(&query).await?;
-//! println!("Found {} papers from {} providers",
-//!          results.papers.len(), results.successful_providers);
+//! // DOI cascade lookup
+//! if let Some(paper) = client.get_by_doi("10.1038/nature12373").await? {
+//!     println!("Found paper: {:?}", paper.title);
+//! }
+//!
+//! // PDF URL cascade lookup
+//! if let Some(pdf_url) = client.get_pdf_url_cascade("10.1038/nature12373").await? {
+//!     println!("PDF URL: {}", pdf_url);
+//! }
 //! # Ok(())
 //! # }
 //! ```
@@ -57,7 +56,7 @@ pub mod providers;
 pub mod rate_limiter;
 
 pub use circuit_breaker_service::CircuitBreakerService;
-pub use meta_search::{MetaSearchClient, MetaSearchConfig, MetaSearchResult};
+pub use meta_search::{MetaSearchClient, MetaSearchConfig};
 pub use mirror::{Mirror, MirrorHealth, MirrorManager};
 pub use rate_limiter::RateLimiter;
 

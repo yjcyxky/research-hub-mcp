@@ -12,7 +12,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, instrument, warn};
 
-/// Input parameters for metadata extraction
+/// Input parameters for PDF metadata extraction
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MetadataInput {
     /// Path to single PDF file
@@ -24,12 +24,6 @@ pub struct MetadataInput {
     #[schemars(description = "Use cached metadata if available (default: true)")]
     #[serde(default = "default_use_cache")]
     pub use_cache: bool,
-    /// Whether to validate metadata with external sources
-    #[schemars(
-        description = "Validate extracted metadata with external sources like CrossRef (default: false)"
-    )]
-    #[serde(default)]
-    pub validate_external: bool,
     /// Whether to extract references/citations
     #[schemars(description = "Extract references and citations from the PDF (default: false)")]
     #[serde(default = "default_extract_refs")]
@@ -170,7 +164,7 @@ struct CacheEntry {
     cached_at: SystemTime,
 }
 
-/// Metadata extraction tool
+/// PDF Metadata extraction tool
 #[derive(Clone)]
 pub struct MetadataExtractor {
     #[allow(dead_code)] // Will be used for configuration access
@@ -178,7 +172,6 @@ pub struct MetadataExtractor {
     cache_db: Option<sled::Db>,
     cache_ttl: Duration,
     extraction_patterns: ExtractionPatterns,
-    crossref_client: Option<reqwest::Client>,
     stats: Arc<RwLock<ExtractionStats>>,
 }
 
@@ -302,7 +295,6 @@ impl MetadataExtractor {
     pub fn new(config: Arc<Config>) -> Result<Self> {
         info!("Initializing metadata extraction tool");
 
-        // Initialize cache database if enabled
         // Initialize cache database
         let cache_db = {
             match sled::open(".metadata_cache") {
@@ -320,19 +312,11 @@ impl MetadataExtractor {
             }
         };
 
-        // Create HTTP client for CrossRef API if needed
-        let crossref_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .user_agent("knowledge_accumulator_mcp/0.1.0")
-            .build()
-            .ok();
-
         Ok(Self {
             config,
             cache_db,
             cache_ttl: Duration::from_secs(86400 * 7), // 7 days
             extraction_patterns: ExtractionPatterns::default(),
-            crossref_client,
             stats: Arc::new(RwLock::new(ExtractionStats::default())),
         })
     }
@@ -346,12 +330,7 @@ impl MetadataExtractor {
         // Check for batch processing
         if let Some(batch_files) = input.batch_files {
             // Use Box::pin to avoid recursion issue
-            return Box::pin(self.extract_batch(
-                batch_files,
-                input.use_cache,
-                input.validate_external,
-            ))
-            .await;
+            return Box::pin(self.extract_batch(batch_files, input.use_cache)).await;
         }
 
         let file_path = PathBuf::from(&input.file_path);
@@ -398,12 +377,7 @@ impl MetadataExtractor {
             .extract_from_pdf(&file_path, input.extract_references)
             .await
         {
-            Ok(mut meta) => {
-                // Validate with external sources if requested
-                if input.validate_external {
-                    self.validate_with_crossref(&mut meta).await;
-                }
-
+            Ok(meta) => {
                 // Cache the result
                 if input.use_cache {
                     self.cache_metadata(&file_path, &meta).await?;
@@ -785,86 +759,6 @@ impl MetadataExtractor {
         }
     }
 
-    /// Validate metadata with `CrossRef` API
-    async fn validate_with_crossref(&self, metadata: &mut ExtractedMetadata) {
-        if let (Some(doi), Some(client)) = (&metadata.doi, &self.crossref_client) {
-            debug!("Validating metadata with CrossRef for DOI: {}", doi);
-
-            let url = format!("https://api.crossref.org/works/{doi}");
-
-            match client.get(&url).send().await {
-                Ok(response) => {
-                    if response.status().is_success() {
-                        match response.json::<serde_json::Value>().await {
-                            Ok(json) => {
-                                Self::merge_crossref_data(metadata, &json);
-                                metadata.confidence_score =
-                                    (metadata.confidence_score + 0.2).min(1.0);
-                            }
-                            Err(e) => {
-                                debug!("Failed to parse CrossRef response: {}", e);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    debug!("CrossRef validation failed: {}", e);
-                }
-            }
-        }
-    }
-
-    /// Merge data from `CrossRef` API
-    fn merge_crossref_data(metadata: &mut ExtractedMetadata, json: &serde_json::Value) {
-        if let Some(message) = json.get("message") {
-            // Update title if missing
-            if metadata.title.is_none() {
-                if let Some(titles) = message.get("title").and_then(|t| t.as_array()) {
-                    if let Some(title) = titles.first().and_then(|t| t.as_str()) {
-                        metadata.title = Some(title.to_string());
-                    }
-                }
-            }
-
-            // Update journal if missing
-            if metadata.journal.is_none() {
-                if let Some(container) = message.get("container-title").and_then(|c| c.as_array()) {
-                    if let Some(journal) = container.first().and_then(|j| j.as_str()) {
-                        metadata.journal = Some(journal.to_string());
-                    }
-                }
-            }
-
-            // Update publication date if missing
-            if metadata.publication_date.is_none() {
-                if let Some(published) = message
-                    .get("published-print")
-                    .or_else(|| message.get("published-online"))
-                {
-                    if let Some(date_parts) = published.get("date-parts").and_then(|d| d.as_array())
-                    {
-                        if let Some(date) = date_parts.first().and_then(|d| d.as_array()) {
-                            let year = date.first().and_then(serde_json::Value::as_i64);
-                            let month = date.get(1).and_then(serde_json::Value::as_i64);
-                            let day = date.get(2).and_then(serde_json::Value::as_i64);
-
-                            if let Some(year) = year {
-                                let date_str = if let (Some(month), Some(day)) = (month, day) {
-                                    format!("{year:04}-{month:02}-{day:02}")
-                                } else if let Some(month) = month {
-                                    format!("{year:04}-{month:02}")
-                                } else {
-                                    format!("{year:04}")
-                                };
-                                metadata.publication_date = Some(date_str);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /// Get cached metadata if available
     async fn get_cached_metadata(&self, file_path: &Path) -> Result<Option<ExtractedMetadata>> {
         if let Some(db) = &self.cache_db {
@@ -990,12 +884,7 @@ impl MetadataExtractor {
             .extract_from_pdf(&file_path, input.extract_references)
             .await
         {
-            Ok(mut meta) => {
-                // Validate with external sources if requested
-                if input.validate_external {
-                    self.validate_with_crossref(&mut meta).await;
-                }
-
+            Ok(meta) => {
                 // Cache the result
                 if input.use_cache {
                     self.cache_metadata(&file_path, &meta).await?;
@@ -1030,12 +919,7 @@ impl MetadataExtractor {
     }
 
     /// Extract metadata from multiple files
-    async fn extract_batch(
-        &self,
-        files: Vec<String>,
-        use_cache: bool,
-        validate_external: bool,
-    ) -> Result<MetadataResult> {
+    async fn extract_batch(&self, files: Vec<String>, use_cache: bool) -> Result<MetadataResult> {
         let start_time = SystemTime::now();
         let num_files = files.len();
 
@@ -1054,7 +938,6 @@ impl MetadataExtractor {
                 let extractor_config = self.config.clone();
                 let cache_db = self.cache_db.clone();
                 let patterns = self.extraction_patterns.clone();
-                let client = self.crossref_client.clone();
 
                 async move {
                     let _permit = semaphore.acquire().await.map_err(|e| {
@@ -1069,14 +952,12 @@ impl MetadataExtractor {
                         cache_db,
                         cache_ttl: self.cache_ttl,
                         extraction_patterns: patterns,
-                        crossref_client: client,
                         stats: Arc::new(RwLock::new(ExtractionStats::default())), // Temp stats
                     };
 
                     let input = MetadataInput {
                         file_path: file_path.clone(),
                         use_cache,
-                        validate_external,
                         extract_references: false,
                         batch_files: None,
                     };
@@ -1216,7 +1097,6 @@ impl std::fmt::Debug for MetadataExtractor {
             .field("config", &"Config")
             .field("cache_enabled", &self.cache_db.is_some())
             .field("cache_ttl", &self.cache_ttl)
-            .field("crossref_enabled", &self.crossref_client.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -1236,13 +1116,11 @@ mod tests {
         let input = MetadataInput {
             file_path: "test.pdf".to_string(),
             use_cache: true,
-            validate_external: false,
             extract_references: false,
             batch_files: None,
         };
 
         assert!(input.use_cache);
-        assert!(!input.validate_external);
         assert!(!input.extract_references);
     }
 
