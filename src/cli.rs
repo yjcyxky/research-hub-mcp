@@ -1,16 +1,27 @@
 #![allow(clippy::uninlined_format_args)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::ignored_unit_patterns)]
+#![allow(clippy::map_unwrap_or)]
+#![allow(clippy::option_if_let_else)]
+#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::trivially_copy_pass_by_ref)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use rust_research_mcp::{
     client::{
         providers::{
             ArxivProvider, BiorxivProvider, CoreProvider, CrossRefProvider, GoogleScholarProvider,
             MdpiProvider, MedrxivProvider, OpenAlexProvider, OpenReviewProvider,
-            PubMedCentralProvider, ResearchGateProvider, SciHubProvider, SemanticScholarProvider,
-            SsrnProvider, UnpaywallProvider,
+            PubMedCentralProvider, PubMedProvider, ResearchGateProvider, SciHubProvider,
+            SemanticScholarProvider, SsrnProvider, UnpaywallProvider,
         },
         MetaSearchClient, MetaSearchConfig,
     },
@@ -21,7 +32,6 @@ use rust_research_mcp::{
     },
     Config, ConfigOverrides,
 };
-use serde_json;
 use tracing::{error, info, Level};
 
 #[derive(Parser)]
@@ -50,17 +60,21 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     /// Search papers from a specific academic source (use 'list-sources' to see available sources)
     Search {
         /// Query text (use native query syntax for the source)
         query: String,
-        /// Source to search (e.g., arxiv, pubmed_central, semantic_scholar)
+        /// Source to search (e.g., arxiv, pubmed, `pubmed_central`, `semantic_scholar`)
         #[arg(short, long)]
         source: String,
         /// Max results to return
         #[arg(short, long, default_value_t = 10)]
         limit: u32,
+        /// Output file path (format detected from extension: .tsv, .json; default: TSV to stdout)
+        #[arg(short, long)]
+        output_file: Option<PathBuf>,
     },
     /// List available academic sources
     ListSources,
@@ -99,10 +113,33 @@ enum Commands {
     },
     /// Install Python dependencies
     Install,
-    /// Extract metadata from a PDF file
-    Metadata {
+    /// Extract metadata from a PDF file (local extraction only)
+    Pdf2metadata {
         /// Path to a PDF file
         input: String,
+    },
+    /// Verify and reconcile metadata from external sources (CrossRef, PubMed, etc.)
+    /// Input: TSV/JSON/JSONL file with metadata records (columns: id, doi, pmid, title, authors, year)
+    /// Output: Verified/corrected metadata in same format
+    VerifyMetadata {
+        /// Input file path (TSV/JSON/JSONL), or use stdin if omitted
+        #[arg(short, long)]
+        input: Option<PathBuf>,
+        /// Output file path, or stdout if omitted
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Output mode: full, notes, or corrected
+        #[arg(long, default_value = "corrected")]
+        output_mode: String,
+        /// Output format: tsv or json (auto-detected from output file extension if not specified)
+        #[arg(long)]
+        format: Option<String>,
+        /// Sources to query: crossref, pubmed, semantic_scholar, openalex (comma-separated)
+        #[arg(long)]
+        sources: Option<String>,
+        /// Maximum concurrent verifications
+        #[arg(long, default_value_t = 4)]
+        concurrency: usize,
     },
     /// Convert PDF to structured JSON and Markdown using GROBID
     Pdf2text {
@@ -171,24 +208,15 @@ enum Commands {
         #[arg(long)]
         cache_dir: Option<PathBuf>,
     },
-    /// Run text2table extraction pipeline
+    /// Run text2table extraction pipeline (batch processing for 1 to N records)
     T2TCli {
-        #[command(subcommand)]
-        command: T2TSubcommands,
-    },
-}
+        /// Input file (.tsv, .csv, .jsonl) - batch processing
+        #[arg(long, required = true)]
+        input_file: PathBuf,
 
-#[derive(Subcommand)]
-enum T2TSubcommands {
-    /// Process a single text input
-    Run {
-        /// Raw text to process
-        #[arg(long)]
-        text: Option<String>,
-
-        /// Path to text file
-        #[arg(long)]
-        text_file: Option<PathBuf>,
+        /// Output file (format detected from extension: .tsv, .csv, .jsonl)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
 
         /// Labels to extract (repeat for multiple)
         #[arg(short, long)]
@@ -198,90 +226,23 @@ enum T2TSubcommands {
         #[arg(long)]
         labels_file: Option<PathBuf>,
 
-        /// Custom user prompt
+        /// Column containing text (if not specified, all columns are used as key:value pairs)
         #[arg(long)]
-        prompt: Option<String>,
+        text_column: Option<String>,
 
-        /// GLiNER threshold
-        #[arg(long, default_value_t = 0.5)]
-        threshold: f64,
-
-        /// GLiNER model name
-        #[arg(long, default_value = "Ihor/gliner-biomed-large-v1.0")]
-        gliner_model: String,
-
-        /// GLiNER soft threshold
+        /// Column for record ID
         #[arg(long)]
-        gliner_soft_threshold: Option<f64>,
-
-        /// vLLM Model name
-        #[arg(long)]
-        model: Option<String>,
-
-        /// Enable thinking mode
-        #[arg(long)]
-        enable_thinking: bool,
-
-        /// vLLM Server URL
-        #[arg(long, env = "TEXT2TABLE_VLLM_URL")]
-        server_url: Option<String>,
-
-        /// GLiNER Service URL
-        #[arg(long, env = "TEXT2TABLE_GLINER_URL")]
-        gliner_url: Option<String>,
-
-        /// Disable GLiNER usage
-        #[arg(long)]
-        disable_gliner: bool,
-
-        /// Enable row validation
-        #[arg(long)]
-        enable_row_validation: bool,
-
-        /// Row validation mode
-        #[arg(long, default_value = "substring")]
-        row_validation_mode: String,
-
-        /// API Key
-        #[arg(long, env = "TEXT2TABLE_API_KEY")]
-        api_key: Option<String>,
-
-        /// GLiNER API Key
-        #[arg(long, env = "TEXT2TABLE_GLINER_API_KEY")]
-        gliner_api_key: Option<String>,
-    },
-    /// Batch process from TSV file
-    Batch {
-        /// Input TSV file
-        #[arg(long)]
-        input_file: PathBuf,
-
-        /// Output file (defaults to output.jsonl or output.tsv based on --output-format)
-        #[arg(long)]
-        output_file: Option<PathBuf>,
-
-        /// Output format (jsonl or tsv)
-        #[arg(long, value_enum, default_value_t = BatchOutputFormat::Jsonl)]
-        output_format: BatchOutputFormat,
+        id_column: Option<String>,
 
         /// Concurrency limit
         #[arg(long, default_value_t = 4)]
         concurrency: usize,
 
-        // --- Copy of Run args (flattening via struct would be better but keeping it simple here) ---
-        /// Labels to extract (repeat for multiple)
-        #[arg(short, long)]
-        label: Vec<String>,
-
-        /// Path to file containing labels (one per line)
-        #[arg(long)]
-        labels_file: Option<PathBuf>,
-
         /// Custom user prompt
         #[arg(long)]
         prompt: Option<String>,
 
-        /// GLiNER threshold
+        /// `GLiNER` threshold
         #[arg(long, default_value_t = 0.5)]
         threshold: f64,
 
@@ -331,23 +292,9 @@ enum T2TSubcommands {
     },
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, ValueEnum)]
-enum BatchOutputFormat {
-    Jsonl,
-    Tsv,
-}
-
-impl BatchOutputFormat {
-    fn as_str(&self) -> &'static str {
-        match self {
-            BatchOutputFormat::Jsonl => "jsonl",
-            BatchOutputFormat::Tsv => "tsv",
-        }
-    }
-}
 
 /// Create a search_source tool with all providers registered
-fn create_search_source_tool() -> anyhow::Result<SearchSourceTool> {
+fn create_search_source_tool() -> SearchSourceTool {
     let mut tool = SearchSourceTool::new();
 
     // Register all providers
@@ -363,6 +310,7 @@ fn create_search_source_tool() -> anyhow::Result<SearchSourceTool> {
     register_provider!(CrossRefProvider::new(None));
     register_provider!(SemanticScholarProvider::new(None));
     register_provider!(PubMedCentralProvider::new(None));
+    register_provider!(PubMedProvider::new(None));
     register_provider!(OpenAlexProvider::new());
     register_provider!(BiorxivProvider::new());
     register_provider!(MedrxivProvider::new());
@@ -375,7 +323,186 @@ fn create_search_source_tool() -> anyhow::Result<SearchSourceTool> {
     register_provider!(GoogleScholarProvider::new(std::env::var("GOOGLE_SCHOLAR_API_KEY").ok()));
     register_provider!(SciHubProvider::new());
 
-    Ok(tool)
+    tool
+}
+
+/// Metadata record for batch verification
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct MetadataRecord {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    doi: Option<String>,
+    #[serde(default)]
+    pmid: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    authors: Option<Vec<String>>,
+    #[serde(default)]
+    year: Option<i32>,
+}
+
+/// Parse metadata records from TSV/JSON/JSONL content
+fn parse_metadata_records(content: &str, format: &str) -> anyhow::Result<Vec<MetadataRecord>> {
+    match format.to_lowercase().as_str() {
+        "json" => {
+            // Try parsing as JSON array first
+            if let Ok(records) = serde_json::from_str::<Vec<MetadataRecord>>(content) {
+                return Ok(records);
+            }
+            // Try as single object
+            let record: MetadataRecord = serde_json::from_str(content)?;
+            Ok(vec![record])
+        }
+        "jsonl" => {
+            let mut records = Vec::new();
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let record: MetadataRecord = serde_json::from_str(line)?;
+                records.push(record);
+            }
+            Ok(records)
+        }
+        _ => {
+            // Parse TSV (default): id, doi, pmid, title, authors, year
+            let mut records = Vec::new();
+            let mut lines = content.lines();
+
+            // Check for header
+            let first_line = lines.next().unwrap_or("");
+            let has_header = first_line.to_lowercase().contains("doi")
+                || first_line.to_lowercase().contains("title")
+                || first_line.to_lowercase().contains("pmid");
+
+            let parse_line = |line: &str, idx: usize| -> Option<MetadataRecord> {
+                let parts: Vec<&str> = line.split('\t').collect();
+                if parts.is_empty() || parts.iter().all(|p| p.trim().is_empty()) {
+                    return None;
+                }
+
+                let get_field = |i: usize| -> Option<String> {
+                    parts.get(i).map(|s| s.trim()).filter(|s| !s.is_empty()).map(ToString::to_string)
+                };
+
+                Some(MetadataRecord {
+                    id: get_field(0).or_else(|| Some(format!("record_{}", idx))),
+                    doi: get_field(1),
+                    pmid: get_field(2),
+                    title: get_field(3),
+                    authors: get_field(4).map(|a| a.split(';').map(|s| s.trim().to_string()).collect()),
+                    year: get_field(5).and_then(|y| y.parse().ok()),
+                })
+            };
+
+            // Parse first line if not header
+            if !has_header {
+                if let Some(record) = parse_line(first_line, 0) {
+                    records.push(record);
+                }
+            }
+
+            // Parse remaining lines
+            for (idx, line) in lines.enumerate() {
+                if let Some(record) = parse_line(line, idx + 1) {
+                    records.push(record);
+                }
+            }
+
+            Ok(records)
+        }
+    }
+}
+
+/// Format verification results for output
+fn format_verification_results(
+    results: &[(Option<String>, rust_research_mcp::Result<rust_research_mcp::tools::verify_metadata::VerificationResult>)],
+    format: &str,
+) -> anyhow::Result<String> {
+    use std::fmt::Write;
+    match format.to_lowercase().as_str() {
+        "json" => {
+            let output: Vec<serde_json::Value> = results
+                .iter()
+                .map(|(id, result)| {
+                    let mut obj = serde_json::json!({
+                        "id": id,
+                    });
+                    match result {
+                        Ok(r) => {
+                            obj["status"] = serde_json::json!("success");
+                            obj["result"] = serde_json::to_value(r).unwrap_or_default();
+                        }
+                        Err(e) => {
+                            obj["status"] = serde_json::json!("error");
+                            obj["error"] = serde_json::json!(e.to_string());
+                        }
+                    }
+                    obj
+                })
+                .collect();
+            Ok(serde_json::to_string_pretty(&output)?)
+        }
+        "jsonl" => {
+            let lines: Vec<String> = results
+                .iter()
+                .map(|(id, result)| {
+                    let mut obj = serde_json::json!({ "id": id });
+                    match result {
+                        Ok(r) => {
+                            obj["status"] = serde_json::json!("success");
+                            obj["result"] = serde_json::to_value(r).unwrap_or_default();
+                        }
+                        Err(e) => {
+                            obj["status"] = serde_json::json!("error");
+                            obj["error"] = serde_json::json!(e.to_string());
+                        }
+                    }
+                    serde_json::to_string(&obj).unwrap_or_default()
+                })
+                .collect();
+            Ok(lines.join("\n"))
+        }
+        _ => {
+            // TSV output (default): id, status, doi, title, authors, year, journal, confidence
+            let mut output = String::new();
+            output.push_str("id\tstatus\tdoi\ttitle\tauthors\tyear\tjournal\tconfidence\n");
+
+            for (id, result) in results {
+                let id_str = id.as_deref().unwrap_or("");
+                match result {
+                    Ok(r) => {
+                        let meta = r.merged_metadata.as_ref();
+                        let doi = meta.and_then(|m| m.doi.as_deref()).unwrap_or("");
+                        let title = meta.and_then(|m| m.title.as_deref()).unwrap_or("");
+                        let authors = meta
+                            .map(|m| m.authors.join("; "))
+                            .unwrap_or_default();
+                        let year = meta
+                            .and_then(|m| m.year)
+                            .map(|y| y.to_string())
+                            .unwrap_or_default();
+                        let journal = meta
+                            .and_then(|m| m.journal.as_deref())
+                            .unwrap_or("");
+                        let confidence = format!("{:.2}", r.overall_confidence);
+                        writeln!(
+                            output,
+                            "{}\tsuccess\t{}\t{}\t{}\t{}\t{}\t{}",
+                            id_str, doi, title, authors, year, journal, confidence
+                        )?;
+                    }
+                    Err(e) => {
+                        writeln!(output, "{}\terror\t\t\t\t\t\t{}", id_str, e)?;
+                    }
+                }
+            }
+            Ok(output)
+        }
+    }
 }
 
 #[tokio::main]
@@ -407,8 +534,9 @@ async fn main() -> anyhow::Result<()> {
             query,
             source,
             limit,
+            output_file,
         } => {
-            let search_tool = create_search_source_tool()?;
+            let search_tool = create_search_source_tool();
             let input = SearchSourceInput {
                 source: source.clone(),
                 query: query.clone(),
@@ -422,15 +550,49 @@ async fn main() -> anyhow::Result<()> {
                 Ok(result) => {
                     let count = result.total_available.unwrap_or(result.papers.len() as u32);
                     info!("Found {} results from {} for '{}'", count, source, query);
-                    for (idx, paper) in result.papers.iter().enumerate() {
-                        let title = paper.title.clone().unwrap_or_else(|| "No title".into());
-                        let doi = paper.doi.clone();
-                        info!(
-                            "{}. {} [DOI: {}]",
-                            idx + 1,
-                            title,
-                            if doi.is_empty() { "N/A".into() } else { doi }
-                        );
+
+                    // Determine output format from file extension
+                    let output_format = output_file
+                        .as_ref()
+                        .and_then(|p| p.extension())
+                        .and_then(|e| e.to_str())
+                        .map(str::to_lowercase)
+                        .unwrap_or_else(|| "tsv".to_string());
+
+                    // Format output
+                    let output_content = if output_format == "json" {
+                        // JSON output
+                        serde_json::to_string_pretty(&result.papers)
+                            .unwrap_or_else(|_| "[]".to_string())
+                    } else {
+                        // TSV output (default)
+                        let mut lines = vec!["doi\ttitle\tauthors\tyear\tjournal\tabstract".to_string()];
+                        for paper in &result.papers {
+                            let doi = &paper.doi;
+                            let title = paper.title.clone().unwrap_or_default();
+                            let authors = paper.authors.join("; ");
+                            let year = paper.year.map(|y| y.to_string()).unwrap_or_default();
+                            let journal = paper.journal.clone().unwrap_or_default();
+                            let abstract_text = paper.abstract_text.clone().unwrap_or_default()
+                                .replace(['\t', '\n'], " ");
+                            lines.push(format!(
+                                "{}\t{}\t{}\t{}\t{}\t{}",
+                                doi, title, authors, year, journal, abstract_text
+                            ));
+                        }
+                        lines.join("\n")
+                    };
+
+                    // Write to file or stdout
+                    if let Some(path) = output_file {
+                        if let Some(parent) = path.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        std::fs::write(&path, &output_content)?;
+                        info!("Results saved to {}", path.display());
+                    } else {
+                        // Print to stdout
+                        println!("{}", output_content);
                     }
                 }
                 Err(e) => {
@@ -439,7 +601,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::ListSources => {
-            let tool = create_search_source_tool()?;
+            let tool = create_search_source_tool();
             info!("Available academic sources:");
             for provider_name in tool.available_sources() {
                 if let Some(info) = tool.get_source_info(&provider_name) {
@@ -517,7 +679,7 @@ async fn main() -> anyhow::Result<()> {
                 info!("Post-processing warning: {}", warning);
             }
         }
-        Commands::Metadata { input } => {
+        Commands::Pdf2metadata { input } => {
             let extractor = MetadataExtractor::new(config)?;
             let meta_input = MetadataInput {
                 file_path: input.clone(),
@@ -527,6 +689,100 @@ async fn main() -> anyhow::Result<()> {
             };
             let result = extractor.extract_metadata(meta_input).await?;
             info!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Commands::VerifyMetadata {
+            input,
+            output,
+            output_mode,
+            format,
+            sources,
+            concurrency,
+        } => {
+            use futures::stream::{self, StreamExt};
+            use rust_research_mcp::tools::verify_metadata::{
+                VerifyMetadataInput, VerifyMetadataTool, VerificationOutputMode,
+            };
+            use std::io::BufRead;
+            use std::sync::Arc;
+
+            // Parse output mode
+            let mode = match output_mode.to_lowercase().as_str() {
+                "notes" => VerificationOutputMode::Notes,
+                "corrected" => VerificationOutputMode::Corrected,
+                _ => VerificationOutputMode::Full,
+            };
+
+            // Parse sources
+            let source_list: Option<Vec<String>> = sources
+                .map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
+
+            // Detect input format and read records
+            let (records, input_format) = if let Some(ref path) = input {
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("tsv");
+                let content = std::fs::read_to_string(path)?;
+                let recs = parse_metadata_records(&content, ext)?;
+                (recs, ext.to_string())
+            } else {
+                // Read from stdin
+                let stdin = std::io::stdin();
+                let content: String = stdin.lock().lines().collect::<Result<Vec<_>, _>>()?.join("\n");
+                let recs = parse_metadata_records(&content, "tsv")?;
+                (recs, "tsv".to_string())
+            };
+
+            if records.is_empty() {
+                return Err(anyhow::anyhow!("No valid metadata records found in input"));
+            }
+
+            info!("Processing {} metadata records with concurrency {}", records.len(), concurrency);
+
+            // Determine output format
+            let out_format = format.unwrap_or_else(|| {
+                output.as_ref()
+                    .and_then(|p| p.extension())
+                    .and_then(|e| e.to_str())
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| input_format.clone())
+            });
+
+            // Create tool and process records concurrently
+            let tool = Arc::new(VerifyMetadataTool::new());
+
+            let results: Vec<_> = stream::iter(records)
+                .map(|record| {
+                    let tool = tool.clone();
+                    let mode = mode.clone();
+                    let sources = source_list.clone();
+                    async move {
+                        let input = VerifyMetadataInput {
+                            doi: record.doi,
+                            pmid: record.pmid,
+                            title: record.title,
+                            authors: record.authors,
+                            year: record.year,
+                            s2_paper_id: None,
+                            openalex_id: None,
+                            sources,
+                            output_mode: mode,
+                        };
+                        let result = tool.verify(input).await;
+                        (record.id, result)
+                    }
+                })
+                .buffer_unordered(concurrency)
+                .collect()
+                .await;
+
+            // Format output
+            let output_content = format_verification_results(&results, &out_format)?;
+
+            // Write output
+            if let Some(ref path) = output {
+                std::fs::write(path, &output_content)?;
+                info!("Results written to: {}", path.display());
+            } else {
+                print!("{}", output_content);
+            }
         }
         Commands::Pdf2text {
             pdf_file,
@@ -614,132 +870,73 @@ async fn main() -> anyhow::Result<()> {
             )
             .map_err(|e| anyhow::anyhow!(e))?;
         }
-        Commands::T2TCli { command } => {
-            use rust_research_mcp::tools::text2table::{
-                Text2TableBatchInput, Text2TableInput, Text2TableTool,
-            };
+        Commands::T2TCli {
+            input_file,
+            output,
+            label,
+            labels_file,
+            text_column,
+            id_column,
+            concurrency,
+            prompt,
+            threshold,
+            gliner_model,
+            gliner_soft_threshold,
+            model,
+            enable_thinking,
+            server_url,
+            gliner_url,
+            disable_gliner,
+            enable_row_validation,
+            row_validation_mode,
+            api_key,
+            gliner_api_key,
+        } => {
+            use rust_research_mcp::python_embed::run_text2table_cli;
 
-            let tool = Text2TableTool::new(config.clone())?;
+            // Validate labels
+            if label.is_empty() && labels_file.is_none() {
+                return Err(anyhow::anyhow!("At least one label is required via --label or --labels-file"));
+            }
 
-            match command {
-                T2TSubcommands::Run {
-                    text,
-                    text_file,
-                    label,
-                    labels_file,
-                    prompt,
-                    threshold,
-                    gliner_model,
-                    gliner_soft_threshold,
-                    model,
-                    enable_thinking,
-                    server_url,
-                    gliner_url,
-                    disable_gliner,
-                    enable_row_validation,
-                    row_validation_mode,
-                    api_key,
-                    gliner_api_key,
-                } => {
-                    let input = Text2TableInput {
-                        text,
-                        text_file: text_file.map(|p| p.to_string_lossy().to_string()),
-                        labels: label,
-                        labels_file: labels_file.map(|p| p.to_string_lossy().to_string()),
-                        prompt,
-                        threshold,
-                        gliner_model,
-                        gliner_soft_threshold,
-                        model,
-                        enable_thinking,
-                        server_url,
-                        gliner_url,
-                        disable_gliner,
-                        enable_row_validation,
-                        row_validation_mode,
-                        api_key,
-                        gliner_api_key,
-                    };
+            let server_url = server_url.ok_or_else(|| {
+                anyhow::anyhow!("Server URL is required. Set TEXT2TABLE_VLLM_URL or use --server-url")
+            })?;
 
-                    tokio::select! {
-                        result = tool.generate(input) => {
-                            let result = result?;
-                            if result.success {
-                                info!("Generation succeeded!");
-                                if let Some(table) = result.table {
-                                    println!("{}", table);
-                                }
-                                if let Some(thinking) = result.thinking {
-                                    info!("Thinking: {}", thinking);
-                                }
-                            } else {
-                                error!("Generation failed: {:?}", result.error);
-                            }
-                        }
-                        _ = wait_for_shutdown_signal() => {
-                            info!("Received shutdown signal, terminating text2table run...");
-                            std::process::exit(130);
-                        }
-                    }
-                }
-                T2TSubcommands::Batch {
-                    input_file,
-                    output_file,
-                    output_format,
-                    concurrency,
-                    label,
-                    labels_file,
-                    prompt,
-                    threshold,
-                    gliner_model,
-                    gliner_soft_threshold,
-                    model,
-                    enable_thinking,
-                    server_url,
-                    gliner_url,
-                    disable_gliner,
-                    enable_row_validation,
-                    row_validation_mode,
-                    api_key,
-                    gliner_api_key,
-                } => {
-                    let config = Text2TableInput {
-                        text: None, // Will be filled per row
-                        text_file: None,
-                        labels: label,
-                        labels_file: labels_file.map(|p| p.to_string_lossy().to_string()),
-                        prompt,
-                        threshold,
-                        gliner_model,
-                        gliner_soft_threshold,
-                        model,
-                        enable_thinking,
-                        server_url,
-                        gliner_url,
-                        disable_gliner,
-                        enable_row_validation,
-                        row_validation_mode,
-                        api_key,
-                        gliner_api_key,
-                    };
+            info!("Running text2table pipeline on {:?}...", input_file);
 
-                    let input = Text2TableBatchInput {
-                        input_file: input_file.to_string_lossy().to_string(),
-                        output_file: output_file.map(|p| p.to_string_lossy().to_string()),
-                        output_format: output_format.as_str().to_string(),
+            tokio::select! {
+                result = tokio::task::spawn_blocking(move || {
+                    run_text2table_cli(
+                        &input_file,
+                        output.as_deref(),
+                        &label,
+                        labels_file.as_deref(),
+                        text_column.as_deref(),
+                        id_column.as_deref(),
                         concurrency,
-                        config,
-                    };
-
-                    tokio::select! {
-                        result = tool.process_batch(input) => {
-                            result?;
-                        }
-                        _ = wait_for_shutdown_signal() => {
-                            info!("Received shutdown signal, terminating text2table batch...");
-                            std::process::exit(130);
-                        }
-                    }
+                        prompt.as_deref(),
+                        threshold,
+                        &gliner_model,
+                        gliner_soft_threshold,
+                        model.as_deref(),
+                        enable_thinking,
+                        &server_url,
+                        gliner_url.as_deref(),
+                        disable_gliner,
+                        enable_row_validation,
+                        &row_validation_mode,
+                        api_key.as_deref(),
+                        gliner_api_key.as_deref(),
+                    )
+                }) => {
+                    let inner_result = result.map_err(|e| anyhow::anyhow!("Task panicked: {e}"))?;
+                    inner_result.map_err(|e| anyhow::anyhow!("{e}"))?;
+                    info!("Text2table processing completed successfully");
+                }
+                _ = wait_for_shutdown_signal() => {
+                    info!("Received shutdown signal, terminating text2table...");
+                    std::process::exit(130);
                 }
             }
         }

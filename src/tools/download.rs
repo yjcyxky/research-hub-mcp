@@ -68,17 +68,13 @@ const fn default_headless() -> bool {
 /// Output format for downloaded content
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DownloadOutputFormat {
     /// Download only the PDF (default behavior)
+    #[default]
     Pdf,
     /// Download PDF and render Markdown with pdf2text
     Markdown,
-}
-
-impl Default for DownloadOutputFormat {
-    fn default() -> Self {
-        Self::Pdf
-    }
 }
 
 /// Progress information for a download
@@ -155,6 +151,7 @@ pub struct DownloadResult {
     pub error: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct PluginRunnerOutput {
     success: bool,
@@ -308,6 +305,7 @@ const fn default_verify() -> bool {
 #[derive(Clone)]
 pub struct DownloadTool {
     client: Arc<MetaSearchClient>,
+    #[allow(dead_code)]
     http_client: Client,
     #[allow(dead_code)] // Will be used for configuration in future features
     config: Arc<Config>,
@@ -822,7 +820,7 @@ impl DownloadTool {
 
         match pyo3_result {
             Ok(result) if result.success => {
-                let file_path = result.file_path.map(PathBuf::from).unwrap_or(target_path);
+                let file_path = result.file_path.unwrap_or(target_path);
 
                 let file_size = if result.file_size.unwrap_or(0) > 0 {
                     result.file_size
@@ -1066,7 +1064,7 @@ impl DownloadTool {
         }
 
         if input.papers.len() > 100 {
-            let num_batches = (input.papers.len() + 99) / 100;
+            let num_batches = input.papers.len().div_ceil(100);
             return Err(crate::Error::InvalidInput {
                 field: "papers".to_string(),
                 reason: format!(
@@ -1126,7 +1124,7 @@ impl DownloadTool {
         if total_papers <= 100 {
             format!("For {} papers: Use single batch call", total_papers)
         } else {
-            let num_batches = (total_papers + 99) / 100;
+            let num_batches = total_papers.div_ceil(100);
             let papers_per_batch = total_papers / num_batches;
             let remainder = total_papers % num_batches;
 
@@ -1536,7 +1534,7 @@ impl DownloadTool {
         }
 
         let filename = if let Some(doi) = &input.doi {
-            match Self::sanitize_filename(&doi) {
+            match Self::sanitize_filename(doi) {
                 Some(doi_filename) => doi_filename + ".pdf",
                 None => Self::generate_filename(metadata, download_url),
             }
@@ -1607,6 +1605,7 @@ impl DownloadTool {
 
     /// Execute the actual download
     #[allow(clippy::too_many_lines)] // Complex download logic needs to be in one place
+    #[allow(dead_code)]
     async fn execute_download(
         &self,
         download_id: String,
@@ -1981,6 +1980,7 @@ impl DownloadTool {
     }
 
     /// Make download request with optional range header
+    #[allow(dead_code)]
     async fn make_download_request(
         &self,
         download_url: &str,
@@ -2008,6 +2008,7 @@ impl DownloadTool {
     }
 
     /// Update total size from response headers
+    #[allow(dead_code)]
     fn update_total_size_from_response(
         progress: &mut DownloadProgress,
         response: &reqwest::Response,
@@ -2025,6 +2026,7 @@ impl DownloadTool {
     }
 
     /// Download with progress tracking
+    #[allow(dead_code)]
     async fn download_with_progress(
         &self,
         response: reqwest::Response,
@@ -2053,7 +2055,7 @@ impl DownloadTool {
                 Ok(chunk) => {
                     chunk_count += 1;
                     total_bytes_received += chunk.len() as u64;
-                    if chunk_count <= 5 || chunk_count % 100 == 0 {
+                    if chunk_count <= 5 || chunk_count.is_multiple_of(100) {
                         debug!(
                             "📦 Chunk #{}: {} bytes (total: {} bytes)",
                             chunk_count,
@@ -2181,6 +2183,7 @@ impl DownloadTool {
     }
 
     /// Update progress statistics
+    #[allow(dead_code)]
     fn update_progress_stats(
         progress: &mut DownloadProgress,
         now: SystemTime,
@@ -2210,6 +2213,7 @@ impl DownloadTool {
     }
 
     /// Finalize download and create result
+    #[allow(dead_code)]
     async fn finalize_download(
         &self,
         file_path: &Path,
@@ -2259,6 +2263,7 @@ impl DownloadTool {
     }
 
     /// Get content length from URL
+    #[allow(dead_code)]
     async fn get_content_length(&self, url: &str) -> Result<u64> {
         let response = self
             .http_client
@@ -2407,6 +2412,7 @@ impl DownloadTool {
     }
 
     /// Validate file path security before creation
+    #[allow(dead_code)]
     async fn validate_file_security(file_path: &Path) -> Result<()> {
         // Check if file already exists and is a symlink
         if file_path.exists() {
@@ -2468,6 +2474,7 @@ impl DownloadTool {
     }
 
     /// Set secure file permissions on downloaded files
+    #[allow(dead_code)]
     async fn set_secure_file_permissions(file_path: &Path) -> Result<()> {
         #[cfg(unix)]
         {

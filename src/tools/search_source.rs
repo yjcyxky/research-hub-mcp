@@ -95,6 +95,7 @@ pub struct SearchSourceTool {
 
 impl SearchSourceTool {
     /// Create a new search source tool
+    #[must_use]
     pub fn new() -> Self {
         Self {
             providers: HashMap::new(),
@@ -108,6 +109,7 @@ impl SearchSourceTool {
     }
 
     /// Get available sources
+    #[must_use]
     pub fn available_sources(&self) -> Vec<String> {
         self.providers.keys().cloned().collect()
     }
@@ -200,10 +202,10 @@ impl SearchSourceTool {
                     source_name, msg
                 )),
                 ProviderError::RateLimit => crate::Error::RateLimitExceeded {
-                    retry_after: std::time::Duration::from_secs(60),
+                    retry_after: Duration::from_secs(60),
                 },
                 ProviderError::Timeout => crate::Error::Timeout {
-                    timeout: std::time::Duration::from_secs(30),
+                    timeout: Duration::from_secs(30),
                 },
                 ProviderError::InvalidQuery(msg) => crate::Error::InvalidInput {
                     field: "query".to_string(),
@@ -252,13 +254,7 @@ impl SearchSourceTool {
                 total_available: Some(all_sources.len() as u32),
                 has_more: false,
                 search_time_ms: 0,
-                source_info: if all_sources.len() == 1 {
-                    all_sources.into_iter().next()
-                } else {
-                    // Return first source info as placeholder
-                    // In practice, the full list would be in response metadata
-                    all_sources.into_iter().next()
-                },
+                source_info: all_sources.into_iter().next(),
             })
         } else if let Some(info) = self.get_source_info(source) {
             Ok(SearchSourceResult {

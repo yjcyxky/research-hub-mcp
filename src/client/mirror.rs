@@ -8,7 +8,7 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 
 /// Health status of a Sci-Hub mirror
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MirrorHealth {
     /// Mirror is healthy and responding
     Healthy,
@@ -17,13 +17,8 @@ pub enum MirrorHealth {
     /// Mirror is not responding
     Unhealthy,
     /// Mirror health is unknown (not yet tested)
+    #[default]
     Unknown,
-}
-
-impl Default for MirrorHealth {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 /// Represents a Sci-Hub mirror with health information

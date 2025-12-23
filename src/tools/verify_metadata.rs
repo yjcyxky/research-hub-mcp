@@ -283,6 +283,7 @@ impl Default for VerifyMetadataTool {
 
 impl VerifyMetadataTool {
     /// Create a new verification tool
+    #[must_use]
     pub fn new() -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))

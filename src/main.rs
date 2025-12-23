@@ -84,10 +84,10 @@ async fn main() -> Result<()> {
     info!("Starting rust-research-mcp server");
 
     // Handle subcommands
-    if let Some(Commands::Install) = cli.command {
+    if matches!(cli.command, Some(Commands::Install)) {
         info!("Installing Python dependencies...");
         match rust_research_mcp::python_embed::install_python_package() {
-            Ok(_) => {
+            Ok(()) => {
                 info!("Python dependencies installed successfully.");
                 return Ok(());
             }

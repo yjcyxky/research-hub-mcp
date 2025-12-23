@@ -9,8 +9,8 @@
 use crate::client::providers::{
     ArxivProvider, BiorxivProvider, CoreProvider, CrossRefProvider, GoogleScholarProvider,
     MdpiProvider, MedrxivProvider, OpenAlexProvider, OpenReviewProvider, ProviderError,
-    PubMedCentralProvider, ResearchGateProvider, SciHubProvider, SearchContext, SearchType,
-    SemanticScholarProvider, SourceProvider, SsrnProvider, UnpaywallProvider,
+    PubMedCentralProvider, PubMedProvider, ResearchGateProvider, SciHubProvider, SearchContext,
+    SearchType, SemanticScholarProvider, SourceProvider, SsrnProvider, UnpaywallProvider,
 };
 use crate::client::PaperMetadata;
 use crate::Config;
@@ -78,8 +78,10 @@ impl MetaSearchClient {
             Arc::new(OpenAlexProvider::new()?),
             // Unpaywall provider (high priority for legal free PDF discovery)
             Arc::new(UnpaywallProvider::new_with_default_email()?),
-            // PubMed Central provider (very high priority for biomedical papers)
+            // PubMed Central provider (very high priority for biomedical papers with full text)
             Arc::new(PubMedCentralProvider::new(None)?),
+            // PubMed provider (high priority for biomedical citations and abstracts)
+            Arc::new(PubMedProvider::new(None)?),
             // CORE provider (high priority for open access collection)
             Arc::new(CoreProvider::new(None)?),
             // SSRN provider (high priority for recent papers and preprints)

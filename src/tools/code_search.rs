@@ -254,7 +254,7 @@ impl CodeSearchTool {
             if regex.is_match(line) {
                 // Check language filter
                 if let Some(ref lang) = input.language {
-                    if !self.detect_language(line).is_some_and(|l| l == *lang) {
+                    if self.detect_language(line).is_none_or(|l| l != *lang) {
                         continue;
                     }
                 }

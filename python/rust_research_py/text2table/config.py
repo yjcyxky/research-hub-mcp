@@ -61,38 +61,3 @@ class Text2TableConfig:
             server_url=os.environ.get("TEXT2TABLE_VLLM_URL", ""),
             gliner_url=os.environ.get("TEXT2TABLE_GLINER_URL"),
         )
-
-
-def detect_input_format(path: Path) -> str:
-    """Detect input format from file extension.
-
-    Returns:
-        'single' for .txt files
-        'batch' for .tsv, .csv, .jsonl files
-    """
-    ext = path.suffix.lower()
-    if ext == ".txt":
-        return "single"
-    elif ext in (".tsv", ".csv", ".jsonl"):
-        return "batch"
-    else:
-        raise ValueError(f"Unsupported input format: {ext}. Supported: .txt, .tsv, .csv, .jsonl")
-
-
-def detect_output_format(path: Optional[Path]) -> str:
-    """Detect output format from file extension.
-
-    Returns:
-        'tsv' for .tsv or no extension
-        'csv' for .csv
-        'jsonl' for .jsonl
-    """
-    if path is None:
-        return "tsv"  # stdout default
-    ext = path.suffix.lower()
-    if ext == ".jsonl":
-        return "jsonl"
-    elif ext == ".csv":
-        return "csv"
-    else:
-        return "tsv"  # default for .tsv and unknown

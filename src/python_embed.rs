@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tracing::{debug, error, info};
+use tracing::info;
 use uuid::Uuid;
 
 // Embed the entire rust_research_py package
@@ -196,6 +196,8 @@ pub struct Pdf2TextResult {
     pub error: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::fn_params_excessive_bools)]
 pub fn run_pdf2text(
     pdf_file: &Path,
     output_dir: &Path,
@@ -264,7 +266,7 @@ pub fn run_pdf2text(
                     success: false,
                     json_path: None,
                     markdown_path: None,
-                    error: Some(e.to_string()),
+                    error: Some(e),
                 })
             }
         }
@@ -613,6 +615,149 @@ pub fn run_text2table_server(
         server_module
             .call_method("start_vllm_server", (), Some(&kwargs))
             .map_err(|e| format!("Failed to call start_vllm_server: {e}"))?;
+
+        Ok(())
+    })
+}
+
+/// Run the text2table CLI with batch processing from file (1 to N records)
+#[allow(clippy::too_many_arguments)]
+pub fn run_text2table_cli(
+    input_file: &Path,
+    output: Option<&Path>,
+    labels: &[String],
+    labels_file: Option<&Path>,
+    text_column: Option<&str>,
+    id_column: Option<&str>,
+    concurrency: usize,
+    prompt: Option<&str>,
+    threshold: f64,
+    gliner_model: &str,
+    gliner_soft_threshold: Option<f64>,
+    model_name: Option<&str>,
+    enable_thinking: bool,
+    server_url: &str,
+    gliner_url: Option<&str>,
+    disable_gliner: bool,
+    enable_row_validation: bool,
+    row_validation_mode: &str,
+    api_key: Option<&str>,
+    gliner_api_key: Option<&str>,
+) -> Result<(), String> {
+    Python::with_gil(|py| {
+        let cli_module = py
+            .import("rust_research_py.text2table.cli")
+            .map_err(|e| format!("Failed to import rust_research_py.text2table.cli: {e}"))?;
+
+        // Build arguments list for the CLI
+        let mut args: Vec<String> = Vec::new();
+
+        // Input file (required)
+        args.push(input_file.to_string_lossy().to_string());
+
+        // Output
+        if let Some(path) = output {
+            args.push("--output".to_string());
+            args.push(path.to_string_lossy().to_string());
+        }
+
+        // Labels
+        for label in labels {
+            args.push("--label".to_string());
+            args.push(label.clone());
+        }
+
+        if let Some(path) = labels_file {
+            args.push("--labels-file".to_string());
+            args.push(path.to_string_lossy().to_string());
+        }
+
+        // Text/ID columns
+        if let Some(col) = text_column {
+            args.push("--text-column".to_string());
+            args.push(col.to_string());
+        }
+
+        if let Some(col) = id_column {
+            args.push("--id-column".to_string());
+            args.push(col.to_string());
+        }
+
+        // Concurrency
+        args.push("--concurrency".to_string());
+        args.push(concurrency.to_string());
+
+        // Processing options
+        if let Some(p) = prompt {
+            args.push("--prompt".to_string());
+            args.push(p.to_string());
+        }
+
+        args.push("--threshold".to_string());
+        args.push(threshold.to_string());
+
+        args.push("--gliner-model".to_string());
+        args.push(gliner_model.to_string());
+
+        if let Some(t) = gliner_soft_threshold {
+            args.push("--gliner-soft-threshold".to_string());
+            args.push(t.to_string());
+        }
+
+        if let Some(m) = model_name {
+            args.push("--model".to_string());
+            args.push(m.to_string());
+        }
+
+        if enable_thinking {
+            args.push("--enable-thinking".to_string());
+        }
+
+        // Server URLs
+        args.push("--server-url".to_string());
+        args.push(server_url.to_string());
+
+        if let Some(url) = gliner_url {
+            args.push("--gliner-url".to_string());
+            args.push(url.to_string());
+        }
+
+        if disable_gliner {
+            args.push("--disable-gliner".to_string());
+        }
+
+        if enable_row_validation {
+            args.push("--enable-row-validation".to_string());
+        }
+
+        args.push("--row-validation-mode".to_string());
+        args.push(row_validation_mode.to_string());
+
+        // API keys
+        if let Some(k) = api_key {
+            args.push("--api-key".to_string());
+            args.push(k.to_string());
+        }
+
+        if let Some(k) = gliner_api_key {
+            args.push("--gliner-api-key".to_string());
+            args.push(k.to_string());
+        }
+
+        // Get the main function and invoke it via click's standalone mode
+        let main_func = cli_module
+            .getattr("main")
+            .map_err(|e| format!("Failed to get main function: {e}"))?;
+
+        // Call main with args (standalone_mode=False to get exceptions)
+        let kwargs = PyDict::new(py);
+        kwargs
+            .set_item("standalone_mode", false)
+            .map_err(|e| format!("Failed to set standalone_mode: {e}"))?;
+
+        main_func
+            .call((args,), Some(&kwargs))
+            .map_err(|e| format!("text2table CLI error: {e}"))?;
 
         Ok(())
     })

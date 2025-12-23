@@ -100,6 +100,7 @@ impl Default for ListSourcesTool {
 
 impl ListSourcesTool {
     /// Create a new list sources tool
+    #[must_use]
     pub fn new() -> Self {
         Self {
             providers: HashMap::new(),

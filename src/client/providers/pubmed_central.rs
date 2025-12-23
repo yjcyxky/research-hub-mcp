@@ -303,10 +303,11 @@ impl PubMedCentralProvider {
 
     /// Convert PMC article to `PaperMetadata`
     fn convert_to_paper(article: &PmcArticle) -> PaperMetadata {
-        let mut authors = Vec::new();
-        if let Some(ref author_list) = article.authors {
-            authors = author_list.iter().filter_map(|a| a.name.clone()).collect();
-        }
+        let authors = article
+            .authors
+            .as_ref()
+            .map(|author_list| author_list.iter().filter_map(|a| a.name.clone()).collect())
+            .unwrap_or_default();
 
         // Extract DOI from article IDs if not in main DOI field
         let doi = article
@@ -336,7 +337,7 @@ impl PubMedCentralProvider {
                         .map(|id| &id.value)
                 })
             })
-            .or_else(|| article.uid.as_ref())
+            .or(article.uid.as_ref())
             .cloned();
 
         // Build PDF URL with robust handling for both standard and NIHMS formats

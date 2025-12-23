@@ -200,7 +200,7 @@ impl BiorxivProvider {
                                 if let Some(start) = href.find("10.1101/") {
                                     let doi_part = &href[start..];
                                     doi = doi_part
-                                        .trim_end_matches(|c| c == '/' || c == '#')
+                                        .trim_end_matches(['/', '#'])
                                         .to_string();
                                     break;
                                 }

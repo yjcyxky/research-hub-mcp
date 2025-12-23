@@ -467,7 +467,7 @@ impl MetadataExtractor {
             }
         })
         .await
-        .map_err(|e| crate::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+        .map_err(|e| crate::Error::Io(std::io::Error::other(e)))?
         .map_err(|e| crate::Error::Parse {
             context: "PDF loading".to_string(),
             message: e,

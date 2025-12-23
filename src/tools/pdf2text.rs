@@ -183,7 +183,7 @@ impl Pdf2TextTool {
                 success: pyo3_result.success,
                 json_path: pyo3_result.json_path,
                 markdown_path: pyo3_result.markdown_path,
-                files_processed: if pyo3_result.success { 1 } else { 0 },
+                files_processed: usize::from(pyo3_result.success),
                 error: pyo3_result.error,
             }),
             Err(e) => Ok(Pdf2TextOutput {

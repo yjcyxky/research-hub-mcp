@@ -1,7 +1,8 @@
 use crate::client::providers::{
     ArxivProvider, BiorxivProvider, CoreProvider, CrossRefProvider, GoogleScholarProvider,
     MdpiProvider, MedrxivProvider, OpenAlexProvider, OpenReviewProvider, PubMedCentralProvider,
-    ResearchGateProvider, SciHubProvider, SemanticScholarProvider, SsrnProvider, UnpaywallProvider,
+    PubMedProvider, ResearchGateProvider, SciHubProvider, SemanticScholarProvider, SsrnProvider,
+    UnpaywallProvider,
 };
 use crate::tools::{
     bibliography::BibliographyInput,
@@ -59,6 +60,7 @@ pub struct MetadataInput {
 #[derive(Debug, Clone)]
 struct CategoryCacheEntry {
     category: Option<String>,
+    #[allow(dead_code)]
     timestamp: SystemTime,
 }
 
@@ -126,6 +128,7 @@ impl ResearchServerHandler {
             CrossRefProvider::new(None),
             SemanticScholarProvider::new(None),
             PubMedCentralProvider::new(None),
+            PubMedProvider::new(None),
             OpenAlexProvider::new(),
             BiorxivProvider::new(),
             MedrxivProvider::new(),
@@ -145,6 +148,7 @@ impl ResearchServerHandler {
             CrossRefProvider::new(None),
             SemanticScholarProvider::new(None),
             PubMedCentralProvider::new(None),
+            PubMedProvider::new(None),
             OpenAlexProvider::new(),
             BiorxivProvider::new(),
             MedrxivProvider::new(),
@@ -1041,7 +1045,7 @@ impl ServerHandler for ResearchServerHandler {
                     if result.total == 0 {
                         output.push_str("\nNo sources available. Check server configuration.\n");
                     } else {
-                        output.push_str("\n");
+                        output.push('\n');
                         for source in &result.sources {
                             let full_text_badge = if source.supports_full_text {
                                 "📄 Full-text"
