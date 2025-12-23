@@ -112,11 +112,13 @@ impl ArxivProvider {
         for entry in doc.descendants().filter(|n| n.has_tag_name("entry")) {
             let mut paper = PaperMetadata {
                 doi: String::new(),
+                pmid: None,
                 title: None,
                 authors: Vec::new(),
                 journal: Some("arXiv".to_string()),
                 year: None,
                 abstract_text: None,
+                keywords: Vec::new(),
                 pdf_url: None,
                 file_size: None,
             };

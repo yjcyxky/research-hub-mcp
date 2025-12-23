@@ -118,11 +118,13 @@ impl ResearchGateProvider {
         if title.is_some() || !authors.is_empty() || !doi.is_empty() {
             Ok(Some(PaperMetadata {
                 doi,
+                pmid: None,
                 title,
                 authors,
                 journal: None,       // Not easily extractable from RG
                 year: None,          // Would need more complex parsing
                 abstract_text: None, // Requires login for full access
+                keywords: Vec::new(),
                 pdf_url: None,       // ResearchGate PDFs require authentication
                 file_size: None,
             }))

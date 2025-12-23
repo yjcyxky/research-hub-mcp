@@ -272,11 +272,13 @@ impl SciHubProvider {
         if pdf_url.is_some() {
             let metadata = PaperMetadata {
                 doi: original_query.to_string(),
+                pmid: None,
                 title,
                 authors: Vec::new(), // Sci-Hub doesn't provide detailed metadata
                 journal: None,
                 year: None,
                 abstract_text: None,
+                keywords: Vec::new(),
                 pdf_url,
                 file_size: None,
             };

@@ -229,11 +229,13 @@ impl BiorxivProvider {
 
             papers.push(PaperMetadata {
                 doi,
+                pmid: None,
                 title,
                 authors,
                 journal: Some("biorxiv preprint".to_string()),
                 year,
                 abstract_text: None,
+                keywords: Vec::new(),
                 pdf_url,
                 file_size: None,
             });
@@ -368,11 +370,13 @@ impl BiorxivProvider {
 
                 papers.push(PaperMetadata {
                     doi,
+                    pmid: None,
                     title,
                     authors,
                     journal: Some("biorxiv preprint (rxivist)".to_string()),
                     year,
                     abstract_text,
+                    keywords: Vec::new(),
                     pdf_url,
                     file_size: None,
                 });
@@ -491,11 +495,13 @@ impl BiorxivProvider {
 
                 papers.push(PaperMetadata {
                     doi,
+                    pmid: None,
                     title,
                     authors,
                     journal: Some("biorxiv preprint (crossref)".to_string()),
                     year,
                     abstract_text,
+                    keywords: Vec::new(),
                     pdf_url,
                     file_size: None,
                 });
@@ -555,11 +561,13 @@ impl BiorxivProvider {
 
         PaperMetadata {
             doi: paper.doi,
+            pmid: None,
             title: Some(paper.title),
             authors,
             journal: Some(format!("{} preprint", paper.server)), // "biorxiv preprint" or "medrxiv preprint"
             year,
             abstract_text: paper.abstract_text,
+            keywords: Vec::new(),
             pdf_url,
             file_size: None,
         }

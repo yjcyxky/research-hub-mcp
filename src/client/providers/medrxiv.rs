@@ -147,11 +147,13 @@ impl MedrxivProvider {
 
         PaperMetadata {
             doi: paper.doi,
+            pmid: None,
             title: Some(paper.title),
             authors,
             journal: Some("medrxiv preprint".to_string()),
             year,
             abstract_text: paper.abstract_text,
+            keywords: Vec::new(),
             pdf_url,
             file_size: None,
         }

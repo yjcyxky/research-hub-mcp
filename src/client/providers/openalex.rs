@@ -225,11 +225,13 @@ impl OpenAlexProvider {
 
             let paper = PaperMetadata {
                 doi,
+                pmid: None,
                 title: work.title,
                 authors,
                 journal,
                 year: work.publication_year,
                 abstract_text,
+                keywords: Vec::new(),
                 pdf_url,
                 file_size: None, // OpenAlex doesn't provide file size
             };

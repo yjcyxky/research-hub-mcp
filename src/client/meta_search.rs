@@ -470,6 +470,8 @@ mod tests {
                 abstract_text: None,
                 pdf_url: None,
                 file_size: None,
+                pmid: None,
+                keywords: vec!(),
             },
             PaperMetadata {
                 doi: "10.1038/nature12373".to_string(), // Same DOI
@@ -480,6 +482,8 @@ mod tests {
                 abstract_text: None,
                 pdf_url: None,
                 file_size: None,
+                pmid: None,
+                keywords: vec!()
             },
         ];
 

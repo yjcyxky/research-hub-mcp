@@ -148,11 +148,13 @@ impl CoreProvider {
 
         PaperMetadata {
             doi,
+            pmid: None,
             title: article.title,
             authors,
             journal,
             year: article.year_published,
             abstract_text: article.abstract_text,
+            keywords: Vec::new(),
             pdf_url,
             file_size: None,
         }

@@ -467,9 +467,11 @@ impl MdpiProvider {
 
         PaperMetadata {
             doi: article.doi.clone().unwrap_or_default(),
+            pmid: None,
             title: article.title.clone(),
             authors,
             abstract_text: article.abstract_text.clone(),
+            keywords: Vec::new(),
             journal: journal_name,
             year,
             pdf_url: article.pdf_url.clone(),

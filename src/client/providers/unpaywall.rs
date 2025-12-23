@@ -150,11 +150,13 @@ impl UnpaywallProvider {
 
         PaperMetadata {
             doi: response.doi,
+            pmid: None,
             title: response.title,
             authors,
             journal: response.journal_name,
             year: response.year,
             abstract_text: None, // Unpaywall doesn't provide abstracts
+            keywords: Vec::new(),
             pdf_url,
             file_size: None,
         }

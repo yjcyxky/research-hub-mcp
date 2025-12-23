@@ -174,11 +174,13 @@ impl CrossRefProvider {
 
         PaperMetadata {
             doi,
+            pmid: None,
             title,
             authors,
             journal,
             year,
             abstract_text: work.abstract_text,
+            keywords: Vec::new(),
             pdf_url,
             file_size: None,
         }

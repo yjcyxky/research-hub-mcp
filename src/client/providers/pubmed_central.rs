@@ -364,9 +364,11 @@ impl PubMedCentralProvider {
 
         PaperMetadata {
             doi,
+            pmid: None,
             title: article.title.clone(),
             authors,
             abstract_text: article.abstract_text.clone(),
+            keywords: Vec::new(),
             journal: article.journal_name.clone(),
             year: article.pub_date.as_ref().and_then(|date| {
                 // Try to extract year from date string (format varies)

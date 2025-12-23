@@ -19,31 +19,37 @@ fn create_test_papers() -> Vec<PaperMetadata> {
     vec![
         PaperMetadata {
             doi: "10.1000/ml1".to_string(),
+            pmid: None,
             title: Some("Deep Learning for Medical Image Analysis".to_string()),
             authors: vec!["Smith, J.".to_string(), "Doe, A.".to_string()],
             journal: Some("Nature Machine Intelligence".to_string()),
             year: Some(2024),
             abstract_text: Some("This paper presents a novel deep learning approach for analyzing medical images using neural networks and machine learning techniques.".to_string()),
+            keywords: Vec::new(),
             pdf_url: None,
             file_size: None,
         },
         PaperMetadata {
             doi: "10.1000/quantum1".to_string(),
+            pmid: None,
             title: Some("Quantum Computing Algorithms for Chemistry".to_string()),
             authors: vec!["Einstein, A.".to_string()],
             journal: Some("Physical Review A".to_string()),
             year: Some(2024),
             abstract_text: Some("We develop quantum algorithms for simulating molecular systems and quantum chemistry calculations.".to_string()),
+            keywords: Vec::new(),
             pdf_url: None,
             file_size: None,
         },
         PaperMetadata {
             doi: "10.1000/agent1".to_string(),
+            pmid: None,
             title: Some("Multi-Agent Systems with Memory".to_string()),
             authors: vec!["Agent, M.".to_string()],
             journal: Some("Journal of AI Research".to_string()),
             year: Some(2024),
             abstract_text: Some("This work explores multi-agent systems with episodic memory and agent coordination mechanisms.".to_string()),
+            keywords: Vec::new(),
             pdf_url: None,
             file_size: None,
         },
@@ -182,11 +188,13 @@ async fn test_categorize_tool_input_validation() {
     let many_papers: Vec<PaperMetadata> = (0..101)
         .map(|i| PaperMetadata {
             doi: format!("10.1000/paper{}", i),
+            pmid: None,
             title: Some(format!("Paper {}", i)),
             authors: vec!["Author".to_string()],
             journal: None,
             year: Some(2024),
             abstract_text: None,
+            keywords: Vec::new(),
             pdf_url: None,
             file_size: None,
         })
@@ -243,11 +251,13 @@ async fn test_categorize_tool_heuristic_categorization() {
         query: "unknown research topic".to_string(),
         papers: vec![PaperMetadata {
             doi: "10.1000/unknown".to_string(),
+            pmid: None,
             title: Some("Some Random Paper".to_string()),
             authors: vec!["Unknown".to_string()],
             journal: None,
             year: Some(2024),
             abstract_text: Some("This is about something completely different.".to_string()),
+            keywords: Vec::new(),
             pdf_url: None,
             file_size: None,
         }],
@@ -375,11 +385,13 @@ async fn test_categorization_prompt_truncation() {
     // Create papers with very long abstracts
     let papers = vec![PaperMetadata {
         doi: "10.1000/long".to_string(),
+        pmid: None,
         title: Some("Long Paper".to_string()),
         authors: vec!["Author".to_string()],
         journal: None,
         year: Some(2024),
         abstract_text: Some("A".repeat(2000)), // Very long abstract
+        keywords: Vec::new(),
         pdf_url: None,
         file_size: None,
     }];

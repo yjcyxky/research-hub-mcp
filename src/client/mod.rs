@@ -260,6 +260,8 @@ impl std::str::FromStr for Doi {
 pub struct PaperMetadata {
     /// Digital Object Identifier
     pub doi: String,
+    /// PubMed ID (if available)
+    pub pmid: Option<String>,
     /// Paper title
     pub title: Option<String>,
     /// Authors
@@ -270,6 +272,8 @@ pub struct PaperMetadata {
     pub year: Option<u32>,
     /// Abstract
     pub abstract_text: Option<String>,
+    /// Keywords (MeSH terms, author keywords, etc.)
+    pub keywords: Vec<String>,
     /// Download URL for the PDF
     pub pdf_url: Option<String>,
     /// File size in bytes (if available)
@@ -282,11 +286,13 @@ impl PaperMetadata {
     pub const fn new(doi: String) -> Self {
         Self {
             doi,
+            pmid: None,
             title: None,
             authors: Vec::new(),
             journal: None,
             year: None,
             abstract_text: None,
+            keywords: Vec::new(),
             pdf_url: None,
             file_size: None,
         }

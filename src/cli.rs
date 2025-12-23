@@ -566,18 +566,20 @@ async fn main() -> anyhow::Result<()> {
                             .unwrap_or_else(|_| "[]".to_string())
                     } else {
                         // TSV output (default)
-                        let mut lines = vec!["doi\ttitle\tauthors\tyear\tjournal\tabstract".to_string()];
+                        let mut lines = vec!["doi\tpmid\ttitle\tauthors\tyear\tjournal\tkeywords\tabstract".to_string()];
                         for paper in &result.papers {
                             let doi = &paper.doi;
+                            let pmid = paper.pmid.clone().unwrap_or_default();
                             let title = paper.title.clone().unwrap_or_default();
                             let authors = paper.authors.join("; ");
                             let year = paper.year.map(|y| y.to_string()).unwrap_or_default();
                             let journal = paper.journal.clone().unwrap_or_default();
+                            let keywords = paper.keywords.join("; ");
                             let abstract_text = paper.abstract_text.clone().unwrap_or_default()
                                 .replace(['\t', '\n'], " ");
                             lines.push(format!(
-                                "{}\t{}\t{}\t{}\t{}\t{}",
-                                doi, title, authors, year, journal, abstract_text
+                                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                                doi, pmid, title, authors, year, journal, keywords, abstract_text
                             ));
                         }
                         lines.join("\n")

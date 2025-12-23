@@ -293,6 +293,8 @@ mod tests {
                 ),
                 pdf_url: None,
                 file_size: None,
+                pmid: None,
+                keywords: vec!()
             },
             PaperMetadata {
                 doi: "10.1000/test2".to_string(),
@@ -306,6 +308,8 @@ mod tests {
                 ),
                 pdf_url: None,
                 file_size: None,
+                pmid: None,
+                keywords: vec!()
             },
         ]
     }
@@ -387,6 +391,8 @@ mod tests {
             ),
             pdf_url: None,
             file_size: None,
+            pmid: None,
+            keywords: vec!()
         }];
         let quantum_result =
             tool.simple_heuristic_categorization("quantum physics", &quantum_papers);

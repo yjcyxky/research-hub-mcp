@@ -171,11 +171,13 @@ impl SsrnProvider {
         if title.is_some() || !authors.is_empty() {
             Ok(Some(PaperMetadata {
                 doi: format!("10.2139/ssrn.{ssrn_id}"),
+                pmid: None,
                 title,
                 authors,
                 journal: Some("SSRN Electronic Journal".to_string()),
                 year,
                 abstract_text,
+                keywords: Vec::new(),
                 pdf_url,
                 file_size: None,
             }))

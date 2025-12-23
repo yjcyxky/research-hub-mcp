@@ -337,6 +337,8 @@ mod tests {
             ),
             pdf_url: None,
             file_size: None,
+            pmid: None,
+            keywords: vec!()
         }];
 
         let prompt = service.generate_category_prompt("machine learning", &papers);
@@ -363,6 +365,8 @@ mod tests {
             abstract_text: Some("A".repeat(1000)), // Very long abstract
             pdf_url: None,
             file_size: None,
+            pmid: None,
+            keywords: vec!()
         }];
 
         let prompt = service.generate_category_prompt("test query", &papers);

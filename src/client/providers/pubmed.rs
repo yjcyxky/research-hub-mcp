@@ -96,6 +96,13 @@ struct ArticleId {
     value: String,
 }
 
+/// Data extracted from efetch (abstracts and keywords)
+#[derive(Default)]
+struct EfetchData {
+    abstract_text: Option<String>,
+    keywords: Vec<String>,
+}
+
 /// Support both array and string forms for idlist
 fn deserialize_idlist<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
@@ -272,12 +279,12 @@ impl PubMedProvider {
         Ok(articles)
     }
 
-    /// Fetch abstracts using efetch API (esummary doesn't return abstracts)
-    async fn fetch_abstracts(
+    /// Fetch abstracts and keywords using efetch API (esummary doesn't return abstracts)
+    async fn fetch_efetch_data(
         &self,
         pmids: &[String],
         context: &SearchContext,
-    ) -> Result<HashMap<String, String>, ProviderError> {
+    ) -> Result<HashMap<String, EfetchData>, ProviderError> {
         if pmids.is_empty() {
             return Ok(HashMap::new());
         }
@@ -319,15 +326,25 @@ impl PubMedProvider {
             ProviderError::Parse(format!("Failed to read PubMed abstract response: {e}"))
         })?;
 
-        // Parse XML to extract abstracts
-        // For simplicity, use regex to extract abstracts (full XML parsing would be more robust)
-        let mut abstracts = HashMap::new();
+        // Parse XML to extract abstracts and keywords
+        let mut results: HashMap<String, EfetchData> = HashMap::new();
 
-        // Match PMID and AbstractText pairs
+        // Match PMID
         let pmid_regex = Regex::new(r"<PMID[^>]*>(\d+)</PMID>").unwrap();
-        let abstract_regex =
-            Regex::new(r"(?s)<Abstract>\s*<AbstractText[^>]*>(.*?)</AbstractText>\s*</Abstract>")
-                .unwrap();
+
+        // Match entire Abstract element (handles structured abstracts with multiple AbstractText)
+        let abstract_block_regex = Regex::new(r"(?s)<Abstract>(.*?)</Abstract>").unwrap();
+
+        // Match individual AbstractText elements (with optional Label attribute)
+        let abstract_text_regex = Regex::new(r#"(?s)<AbstractText[^>]*(?:Label="([^"]*)")?[^>]*>(.*?)</AbstractText>"#).unwrap();
+
+        // Match keywords from KeywordList
+        let keyword_list_regex = Regex::new(r"(?s)<KeywordList[^>]*>(.*?)</KeywordList>").unwrap();
+        let keyword_regex = Regex::new(r"(?s)<Keyword[^>]*>(.*?)</Keyword>").unwrap();
+
+        // Match MeSH terms
+        let mesh_list_regex = Regex::new(r"(?s)<MeshHeadingList>(.*?)</MeshHeadingList>").unwrap();
+        let mesh_descriptor_regex = Regex::new(r"(?s)<DescriptorName[^>]*>(.*?)</DescriptorName>").unwrap();
 
         // Split by article
         let article_regex = Regex::new(r"(?s)<PubmedArticle>(.*?)</PubmedArticle>").unwrap();
@@ -338,28 +355,76 @@ impl PubMedProvider {
 
             if let Some(pmid_cap) = pmid_regex.captures(article_xml) {
                 let pmid = pmid_cap[1].to_string();
+                let mut data = EfetchData::default();
 
-                if let Some(abstract_cap) = abstract_regex.captures(article_xml) {
-                    // Clean up the abstract text (remove XML tags)
-                    let abstract_text = abstract_cap[1]
-                        .replace("<AbstractText>", "")
-                        .replace("</AbstractText>", " ")
-                        .replace('\n', " ")
-                        .trim()
-                        .to_string();
+                // Extract abstract (handling structured abstracts)
+                if let Some(abstract_block_cap) = abstract_block_regex.captures(article_xml) {
+                    let abstract_block = &abstract_block_cap[1];
+                    let mut abstract_parts: Vec<String> = Vec::new();
 
-                    // Remove any remaining XML-like tags
-                    let clean_abstract =
-                        tag_cleanup_regex.replace_all(&abstract_text, "");
-                    if !clean_abstract.is_empty() {
-                        abstracts.insert(pmid, clean_abstract.to_string());
+                    for text_cap in abstract_text_regex.captures_iter(abstract_block) {
+                        let label = text_cap.get(1).map(|m| m.as_str());
+                        let text = &text_cap[2];
+
+                        // Clean up the text (remove nested XML tags)
+                        let clean_text = tag_cleanup_regex
+                            .replace_all(text, "")
+                            .trim()
+                            .to_string();
+
+                        if !clean_text.is_empty() {
+                            if let Some(lbl) = label {
+                                if !lbl.is_empty() {
+                                    // Include label for structured abstracts
+                                    abstract_parts.push(format!("{}: {}", lbl.to_uppercase(), clean_text));
+                                } else {
+                                    abstract_parts.push(clean_text);
+                                }
+                            } else {
+                                abstract_parts.push(clean_text);
+                            }
+                        }
+                    }
+
+                    if !abstract_parts.is_empty() {
+                        data.abstract_text = Some(abstract_parts.join(" "));
                     }
                 }
+
+                // Extract keywords from KeywordList
+                if let Some(keyword_list_cap) = keyword_list_regex.captures(article_xml) {
+                    let keyword_list = &keyword_list_cap[1];
+                    for kw_cap in keyword_regex.captures_iter(keyword_list) {
+                        let keyword = tag_cleanup_regex
+                            .replace_all(&kw_cap[1], "")
+                            .trim()
+                            .to_string();
+                        if !keyword.is_empty() {
+                            data.keywords.push(keyword);
+                        }
+                    }
+                }
+
+                // Also extract MeSH terms as keywords
+                if let Some(mesh_list_cap) = mesh_list_regex.captures(article_xml) {
+                    let mesh_list = &mesh_list_cap[1];
+                    for mesh_cap in mesh_descriptor_regex.captures_iter(mesh_list) {
+                        let mesh_term = tag_cleanup_regex
+                            .replace_all(&mesh_cap[1], "")
+                            .trim()
+                            .to_string();
+                        if !mesh_term.is_empty() && !data.keywords.contains(&mesh_term) {
+                            data.keywords.push(mesh_term);
+                        }
+                    }
+                }
+
+                results.insert(pmid, data);
             }
         }
 
-        debug!("Fetched {} abstracts from PubMed", abstracts.len());
-        Ok(abstracts)
+        debug!("Fetched efetch data for {} articles from PubMed", results.len());
+        Ok(results)
     }
 
     /// Build query string for different search types
@@ -389,7 +454,7 @@ impl PubMedProvider {
     }
 
     /// Convert PubMed article to `PaperMetadata`
-    fn convert_to_paper(article: &PubMedArticle, abstract_text: Option<&String>) -> PaperMetadata {
+    fn convert_to_paper(article: &PubMedArticle, efetch_data: Option<&EfetchData>) -> PaperMetadata {
         let authors = article
             .authors
             .as_ref()
@@ -419,7 +484,7 @@ impl PubMedProvider {
             })
             .unwrap_or_default();
 
-        // Extract PMID for building PubMed URL
+        // Extract PMID for building PubMed URL and for the pmid field
         let pmid = article.uid.clone().or_else(|| {
             article.article_ids.as_ref().and_then(|ids| {
                 ids.iter()
@@ -430,13 +495,15 @@ impl PubMedProvider {
 
         // PubMed doesn't provide direct PDF URLs, but we can link to the PubMed page
         // which often has links to full text from publishers
-        let pdf_url = pmid.map(|id| format!("https://pubmed.ncbi.nlm.nih.gov/{}/", id));
+        let pdf_url = pmid.as_ref().map(|id| format!("https://pubmed.ncbi.nlm.nih.gov/{}/", id));
 
         PaperMetadata {
             doi,
+            pmid,
             title: article.title.clone(),
             authors,
-            abstract_text: abstract_text.cloned(),
+            abstract_text: efetch_data.and_then(|d| d.abstract_text.clone()),
+            keywords: efetch_data.map(|d| d.keywords.clone()).unwrap_or_default(),
             journal: article.journal_name.clone(),
             year: article.pub_date.as_ref().and_then(|date| {
                 // Try to extract year from date string (format varies: "2024 Jan 15", "2024", etc.)
@@ -556,8 +623,8 @@ impl SourceProvider for PubMedProvider {
         // Fetch article metadata
         let articles = self.fetch_articles(&pmids, context).await?;
 
-        // Fetch abstracts separately (esummary doesn't include them)
-        let abstracts = self.fetch_abstracts(&pmids, context).await.unwrap_or_default();
+        // Fetch abstracts and keywords (esummary doesn't include them)
+        let efetch_data = self.fetch_efetch_data(&pmids, context).await.unwrap_or_default();
 
         let search_time = start_time.elapsed();
 
@@ -565,8 +632,8 @@ impl SourceProvider for PubMedProvider {
             .iter()
             .map(|article| {
                 let pmid = article.uid.as_ref();
-                let abstract_text = pmid.and_then(|id| abstracts.get(id));
-                Self::convert_to_paper(article, abstract_text)
+                let data = pmid.and_then(|id| efetch_data.get(id));
+                Self::convert_to_paper(article, data)
             })
             .collect();
 

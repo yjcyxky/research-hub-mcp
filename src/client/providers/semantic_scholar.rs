@@ -162,11 +162,13 @@ impl SemanticScholarProvider {
 
         PaperMetadata {
             doi,
+            pmid: None,
             title: paper.title,
             authors,
             journal,
             year: paper.year,
             abstract_text: paper.abstract_text,
+            keywords: Vec::new(),
             pdf_url,
             file_size: None,
         }

@@ -37,11 +37,13 @@ async fn test_categorization_feature_integration() {
     let test_papers = vec![
         PaperMetadata {
             doi: "10.1000/ml1".to_string(),
+            pmid: None,
             title: Some("Deep Learning for Image Classification".to_string()),
             authors: vec!["Smith, J.".to_string()],
             journal: Some("Nature Machine Intelligence".to_string()),
             year: Some(2024),
             abstract_text: Some("This paper presents a deep learning approach using neural networks for image classification tasks.".to_string()),
+            keywords: Vec::new(),
             pdf_url: None,
             file_size: None,
         }
@@ -105,31 +107,37 @@ async fn test_categorization_workflow() {
     let papers = vec![
         PaperMetadata {
             doi: "10.1000/ml".to_string(),
+            pmid: None,
             title: Some("Machine Learning in Healthcare".to_string()),
             authors: vec!["AI Researcher".to_string()],
             journal: None,
             year: Some(2024),
             abstract_text: Some("This study explores machine learning applications in medical diagnosis and healthcare systems.".to_string()),
+            keywords: Vec::new(),
             pdf_url: None,
             file_size: None,
         },
         PaperMetadata {
             doi: "10.1000/quantum".to_string(),
+            pmid: None,
             title: Some("Quantum Computing Algorithms".to_string()),
             authors: vec!["Quantum Physicist".to_string()],
             journal: None,
             year: Some(2024),
             abstract_text: Some("We present novel quantum algorithms for solving complex computational problems in quantum computing.".to_string()),
+            keywords: Vec::new(),
             pdf_url: None,
             file_size: None,
         },
         PaperMetadata {
             doi: "10.1000/agent".to_string(),
+            pmid: None,
             title: Some("Multi-Agent Systems with Memory".to_string()),
             authors: vec!["Agent Researcher".to_string()],
             journal: None,
             year: Some(2024),
             abstract_text: Some("This work explores multi-agent systems, agent coordination, and episodic memory mechanisms.".to_string()),
+            keywords: Vec::new(),
             pdf_url: None,
             file_size: None,
         },
@@ -185,11 +193,13 @@ async fn test_categorization_disabled() {
 
     let papers = vec![PaperMetadata {
         doi: "10.1000/test".to_string(),
+        pmid: None,
         title: Some("Test Paper".to_string()),
         authors: vec!["Author".to_string()],
         journal: None,
         year: Some(2024),
         abstract_text: Some("Test abstract".to_string()),
+        keywords: Vec::new(),
         pdf_url: None,
         file_size: None,
     }];

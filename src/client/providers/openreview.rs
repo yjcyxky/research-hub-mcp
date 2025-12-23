@@ -237,9 +237,11 @@ impl OpenReviewProvider {
 
         PaperMetadata {
             doi: String::new(), // OpenReview papers typically don't have DOIs
+            pmid: None,
             title: note.content.title.clone(),
             authors,
             abstract_text: note.content.abstract_text.clone(),
+            keywords: Vec::new(),
             journal,
             year,
             pdf_url,

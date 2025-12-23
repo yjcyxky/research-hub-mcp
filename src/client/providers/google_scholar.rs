@@ -234,11 +234,13 @@ impl SourceProvider for GoogleScholarProvider {
 
                 PaperMetadata {
                     doi: String::new(), // Scholar rarely surfaces DOI directly
+                    pmid: None,
                     title: item.title.clone(),
                     authors,
                     journal,
                     year: item.publication_info.year,
                     abstract_text: None,
+                    keywords: Vec::new(),
                     pdf_url,
                     file_size: None,
                 }
